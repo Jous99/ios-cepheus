@@ -21,8 +21,11 @@ jobs:
             "https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-77006/1158E502-D76D-4226-AA06-ED5E30CD1111/iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw"
           ls -lh "$RUNNER_TEMP/ios.ipsw"
 
-      - name: Comprobar soporte hfsplus
+      - name: Instalar módulos extra del kernel y cargar hfsplus
         run: |
+          sudo apt-get update
+          sudo apt-get install -y "linux-modules-extra-$(uname -r)" \
+            || sudo apt-get install -y linux-modules-extra-azure
           sudo modprobe hfsplus
           lsmod | grep hfsplus
 
