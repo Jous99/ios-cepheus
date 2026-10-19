@@ -1,0 +1,45 @@
+diff --git a/pexpert/arm/pe_init.c b/pexpert/arm/pe_init.c
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -37,9 +37,9 @@
+ #define FW_VERS_LEN 128
+ 
+ char iBoot_version[FW_VERS_LEN];
+-#if defined(TARGET_OS_OSX) && defined(__arm64__)
++#if defined(__arm64__)
+ char iBoot_Stage_2_version[FW_VERS_LEN];
+-#endif /* defined(TARGET_OS_OSX) && defined(__arm64__) */
++#endif /* defined(__arm64__) */
+ 
+ /*
+  * This variable is only modified once, when the BSP starts executing. We put it in __DATA_CONST
+@@ -249,9 +249,9 @@
+ 	PE_init_printf(TRUE);
+ 
+ 	printf("iBoot version: %s\n", iBoot_version);
+-#if defined(TARGET_OS_OSX) && defined(__arm64__)
++#if defined(__arm64__)
+ 	printf("iBoot Stage 2 version: %s\n", iBoot_Stage_2_version);
+-#endif /* defined(TARGET_OS_OSX) && defined(__arm64__) */
++#endif /* defined(__arm64__) */
+ 
+ 	if (kSuccess == SecureDTLookupEntry(0, "/chosen/memory-map", &entry)) {
+ 		boot_progress_element const *bootPict;
+@@ -475,7 +475,7 @@
+ 				bcopy(prop, iBoot_version, size);
+ 				iBoot_version[size - 1] = '\0';
+ 			}
+-#if defined(TARGET_OS_OSX) && defined(__arm64__)
++#if defined(__arm64__)
+ 			if (kSuccess == SecureDTGetProperty(entry, "system-firmware-version", (void const **) &prop, &size)) {
+ 				if (size > sizeof(iBoot_Stage_2_version)) {
+ 					size = sizeof(iBoot_Stage_2_version);
+@@ -483,7 +483,7 @@
+ 				bcopy(prop, iBoot_Stage_2_version, size);
+ 				iBoot_Stage_2_version[size - 1] = '\0';
+ 			}
+-#endif /* defined(TARGET_OS_OSX) && defined(__arm64__) */
++#endif /* defined(__arm64__) */
+ 			if (kSuccess == SecureDTGetProperty(entry, "unique-chip-id",
+ 			    (void const **) &prop, &size)) {
+ 				if (size > sizeof(gPlatformECID)) {
