@@ -65,6 +65,24 @@ PY
 
 # Kernel builds use -nostdinc. Carry the real SDK target definitions beside
 # the provider so local compiles from the uploaded build tree work as well.
+mkdir -p bsd/pthread/sweet_libpthread/include/sys
+cp -R "$(xcrun --sdk macosx --show-sdk-path)/usr/include/sys/_pthread" bsd/pthread/sweet_libpthread/include/sys/
+python3 - <<'PY'
+from pathlib import Path
+import os
+import re
+
+root = Path('bsd/pthread/sweet_libpthread')
+pat = re.compile(r'#include <sys/_pthread/([^>]+)>')
+for path in root.rglob('*.[ch]'):
+    text = path.read_text()
+    def rel(m):
+        target = root / 'include' / 'sys' / '_pthread' / m.group(1)
+        return '#include "%s"' % os.path.relpath(target, path.parent)
+    new = pat.sub(rel, text)
+    if new != text:
+        path.write_text(new)
+PY
 pthread_sdk=$(xcrun --sdk macosx --show-sdk-path)
 cp "$pthread_sdk/usr/include/TargetConditionals.h" EXTERNAL_HEADERS/
 echo "Staged libpthread-514.100.2 ($pthread_sha) for SWEET"
