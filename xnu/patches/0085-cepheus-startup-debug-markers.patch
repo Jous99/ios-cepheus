@@ -1,0 +1,27 @@
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c	2026-10-19 20:13:44.296073734 +0000
+@@ -221,20 +221,16 @@
+ static inline void
+ kernel_bootstrap_log(const char *message)
+ {
+-	if ((startup_debug & STARTUP_DEBUG_VERBOSE) &&
+-	    startup_phase >= STARTUP_SUB_KPRINTF) {
+-		kprintf("kernel_bootstrap: %s\n", message);
+-	}
++	/* SWEET debug: siempre en pantalla (printf) */
++	printf("kernel_bootstrap: %s\n", message);
+ 	kernel_debug_string_early(message);
+ }
+ 
+ static inline void
+ kernel_bootstrap_thread_log(const char *message)
+ {
+-	if ((startup_debug & STARTUP_DEBUG_VERBOSE) &&
+-	    startup_phase >= STARTUP_SUB_KPRINTF) {
+-		kprintf("kernel_bootstrap_thread: %s\n", message);
+-	}
++	/* SWEET debug: siempre en pantalla (printf) */
++	printf("kernel_bootstrap_thread: %s\n", message);
+ 	kernel_debug_string_early(message);
+ }
+ 
