@@ -20,19 +20,49 @@ Datos extraídos del paquete oficial de MIUI 12.5.1 global para cepheus (`boot.i
 | Almacenamiento | UFS en `ufshc@1d84000` | La misma dirección que en sweet |
 | Interrupciones | GIC-v3, `GICD 0x17a00000`, `GICR 0x17a60000` | Igual que en sweet |
 
-## Qué está hecho
+## Checklist
 
-- Identificación del hardware de cepheus (tabla de arriba).
-- `tools/mkadt.py --board cepheus`: genera un ADT con el framebuffer 1080x2340, el `compatible` `xiaomi,cepheus` y las frecuencias de los tres clústeres. Sin `--board`, el comportamiento es el de sweet.
-- Los `.gitignore` excluyen las imágenes del teléfono (`*.img`, `backup/`, `miui rom/`, `dtb/`), para que no se suban firmwares ni copias de seguridad.
+### Hecho
+- [x] Hardware de cepheus identificado: SM8150, PM8150, táctil ST FTS en SE17, panel 1080x2340
+- [x] Direcciones de GIC y UFS confirmadas (coinciden con sweet)
+- [x] dtb base SM8150 v2 extraído de `boot.img`
+- [x] Overlay CEPHEUS extraído de `dtbo.img`
+- [x] `tools/mkadt.py --board cepheus` creado
+- [x] `d22ap.adt` del iPhone X extraído del IPSW 16.7.16 (20H392)
+- [x] Los `.gitignore` excluyen imágenes, firmware y copias de seguridad
 
-## Qué falta
+### Fase 0: Preparación del teléfono
+- [ ] Copia de seguridad de `boot`, `dtbo`, `vbmeta`, `persist`, `modemst1`, `modemst2`, `fsg` y `fsc`
+- [ ] Bootloader desbloqueado con Mi Unlock (revisar el estado de la cuenta)
+- [ ] Probar `fastboot boot` con un boot.img de Android sin modificar
 
-1. **Memoria DRAM real.** El dtb base deja el nodo `memory` vacío, porque lo rellena ABL en tiempo de ejecución. Hace falta una sonda de arranque que lea el FDT vivo para fijar `dram-base` y `dram-size`.
-2. **Descriptor de iPhone X (`research/ipsw-x/d22ap.adt`).** Se extrae del IPSW de iOS 16.7.16 de Apple, igual que en ios-sweet. Sin él, MobileGestalt no tiene el nodo `/product`.
-3. **Drivers de kernel para cepheus.** Los parches de sweet que tocan hardware (`sweet_touch.c` con Goodix en SE7, `sweet_keys.c`, `sweet_rpmh.c`, USB) son específicos de SM7150. Hay que escribir sus equivalentes para ST FTS en SE17 y para el PM8150. El `SweetPlatformExpert` todavía busca `xiaomi,sweet`, así que también hay que actualizarlo.
-4. **Shim.** Las direcciones de `shim/` son las de sweet. Hay que revisarlas con el dtb de cepheus antes de generar la imagen de arranque.
-5. **CI de kernel.** El kernel se compila en runners macOS de GitHub Actions, que no están disponibles en Forgejo.
+### Fase 1: Arranque y consola en pantalla
+- [ ] Sonda de arranque que lea el FDT vivo de ABL: DRAM real (`dram-base`, `dram-size`) y framebuffer
+- [ ] Ajustar `mkadt.py` con la memoria real
+- [ ] Revisar `shim/` con las direcciones de cepheus (UFS, consola, MMU)
+- [ ] Parche del kernel: que `SweetPlatformExpert` reconozca `xiaomi,cepheus`
+- [ ] Commit y CI de kernel en GitHub Actions (vigilar los minutos de macOS en repos privados)
+- [ ] **Hito 1:** el kernel escribe texto en pantalla con `fastboot boot`
+
+### Fase 2: Almacenamiento y userland
+- [ ] El shim lee el ramdisk desde UFS en cepheus
+- [ ] Imagen root de iOS con `tools/mkiosroot.sh` a partir del IPSW
+- [ ] Escribir `userdata` (borra Android; confirmar antes)
+- [ ] **Hito 2:** launchd y el userland arrancan
+
+### Fase 3: Entrada
+- [ ] Botones de volumen y encendido desde el PM8150 (`gpio-keys`)
+- [ ] Driver nuevo para el táctil ST FTS en SE17, con `st_fts_f1.ftb`
+- [ ] **Hito 3:** SpringBoard y Setup se pueden usar con el táctil
+
+### Fase 4: Extras (no prioritarios)
+- [ ] USB ECM para leer logs por red
+- [ ] Panel en modo comando (sin DSC)
+- [ ] Sensores y audio
+
+### Decisiones pendientes
+- [ ] Dual boot: aparcado, se retoma más adelante
+- [ ] Confirmar que iOS puede ocupar `userdata` antes de la Fase 2
 
 ## Cómo se compila (cuando esté listo)
 
