@@ -21,7 +21,7 @@ DMG="$WORK/dmg"
 echo "==> Dependencias"
 sudo apt-get update -qq
 sudo apt-get install -y -qq hfsprogs android-sdk-libsparse-utils rsync python3 \
-    cmake g++ git libfuse3-dev libbz2-dev zlib1g-dev pkg-config >/dev/null
+    cmake g++ git libfuse3-dev libbz2-dev zlib1g-dev pkg-config cpio >/dev/null
 
 # apfs-fuse is not in Ubuntu's repos: build it from source once.
 if ! command -v apfs-fuse >/dev/null; then
@@ -29,7 +29,9 @@ if ! command -v apfs-fuse >/dev/null; then
     rm -rf "$src"
     git clone -q --depth 1 --recursive https://github.com/sgan81/apfs-fuse "$src"
     mkdir -p "$src/build" && cd "$src/build"
-    cmake .. -DCMAKE_BUILD_TYPE=Release >/dev/null && make -j"$(nproc)" >/dev/null
+    # apfs-fuse's CMakeLists predates CMake 4, which refuses old minimum versions.
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
+    make -j"$(nproc)" >/dev/null
     sudo install -m 755 apfs-fuse /usr/local/bin/apfs-fuse
     cd "$ROOT"
 fi
