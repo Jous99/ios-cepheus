@@ -56,6 +56,11 @@ replace('kern_support.c', 'workq_kevent(p, &th_addrs, NULL,',
 replace('kern_support.c',
         'panic(__func__ ": thread_set_wq_state failed: %d", error);',
         'panic("%s: thread_set_wq_state failed: %d", __func__, error);', 4)
+for path in target.rglob('*.[ch]'):
+    text = path.read_text()
+    new = text.replace('#include "kern/kern_internal.h"', '#include "kern_internal.h"')
+    if new != text:
+        path.write_text(new)
 PY
 
 # Kernel builds use -nostdinc. Carry the real SDK target definitions beside
