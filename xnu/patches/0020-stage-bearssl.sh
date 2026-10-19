@@ -44,5 +44,9 @@ shutil.copy2(source / 'LICENSE.txt', target / 'LICENSE.txt')
 for sub in ('symcipher', 'hash', 'codec'):
     for f in (target / 'src' / sub).glob('*.c'):
         f.write_text(f.read_text().replace('#include "inner.h"', '#include "../inner.h"'))
+for h in (target / 'inc').glob('*.h'):
+    shutil.copy2(h, target / 'src' / h.name)
+for h in (target / 'inc').glob('*.h'):
+    shutil.copy2(h, target / 'src' / h.name)
 PY
 echo "Staged BearSSL portable AES, MD5, SHA-1 and SHA-384/512 ($bearssl_sha) for SWEET"

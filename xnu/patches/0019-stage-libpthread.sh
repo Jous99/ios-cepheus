@@ -58,7 +58,7 @@ replace('kern_support.c',
         'panic("%s: thread_set_wq_state failed: %d", __func__, error);', 4)
 for path in target.rglob('*.[ch]'):
     text = path.read_text()
-    new = text.replace('#include "kern/kern_internal.h"', '#include "kern_internal.h"')
+    new = text.replace('#include "kern/', '#include "')
     if new != text:
         path.write_text(new)
 PY
