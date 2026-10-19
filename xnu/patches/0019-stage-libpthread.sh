@@ -61,5 +61,5 @@ PY
 # Kernel builds use -nostdinc. Carry the real SDK target definitions beside
 # the provider so local compiles from the uploaded build tree work as well.
 pthread_sdk=$(xcrun --sdk macosx --show-sdk-path)
-cp "$pthread_sdk/usr/include/TargetConditionals.h" bsd/pthread/sweet_libpthread/
+cp "$pthread_sdk/usr/include/TargetConditionals.h" EXTERNAL_HEADERS/
 echo "Staged libpthread-514.100.2 ($pthread_sha) for SWEET"
