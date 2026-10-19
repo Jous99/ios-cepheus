@@ -85,6 +85,9 @@ for path in root.rglob('*.[ch]'):
 PY
 mkdir -p EXTERNAL_HEADERS/sys
 cp "$(xcrun --sdk macosx --show-sdk-path)/usr/include/sys/qos.h" EXTERNAL_HEADERS/sys/
+# private/pthread/qos_private.h includes <sys/qos_private.h>, which ships in the
+# libpthread private/ tree rather than the SDK.
+cp bsd/pthread/sweet_libpthread/private/sys/qos_private.h EXTERNAL_HEADERS/sys/
 python3 - <<'PY'
 from pathlib import Path
 import os
