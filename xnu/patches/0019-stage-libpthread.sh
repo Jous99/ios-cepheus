@@ -56,9 +56,9 @@ replace('kern_support.c', 'workq_kevent(p, &th_addrs, NULL,',
 replace('kern_support.c',
         'panic(__func__ ": thread_set_wq_state failed: %d", error);',
         'panic("%s: thread_set_wq_state failed: %d", __func__, error);', 4)
-for path in target.rglob('*.[ch]'):
+for path in (target / "kern").rglob('*.[ch]'):
     text = path.read_text()
-    new = text.replace('#include "kern/', '#include "')
+    new = text.replace('#include "kern/', '#include "').replace('#include "pthread/', '#include "../include/pthread/')
     if new != text:
         path.write_text(new)
 PY
