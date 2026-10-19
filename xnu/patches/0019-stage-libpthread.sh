@@ -85,6 +85,25 @@ for path in root.rglob('*.[ch]'):
 PY
 mkdir -p EXTERNAL_HEADERS/sys
 cp "$(xcrun --sdk macosx --show-sdk-path)/usr/include/sys/qos.h" EXTERNAL_HEADERS/sys/
+python3 - <<'PY'
+from pathlib import Path
+import os
+import re
+
+root = Path('bsd/pthread/sweet_libpthread')
+pat = re.compile(r'#include "(?:\.\./include/)?pthread/([^"]+)"')
+for path in (root / 'kern').rglob('*.[ch]'):
+    text = path.read_text()
+    def rel(m):
+        for base in ('include', 'private'):
+            cand = root / base / 'pthread' / m.group(1)
+            if cand.exists():
+                return '#include "%s"' % os.path.relpath(cand, path.parent)
+        return m.group(0)
+    new = pat.sub(rel, text)
+    if new != text:
+        path.write_text(new)
+PY
 pthread_sdk=$(xcrun --sdk macosx --show-sdk-path)
 cp "$pthread_sdk/usr/include/TargetConditionals.h" EXTERNAL_HEADERS/
 echo "Staged libpthread-514.100.2 ($pthread_sha) for SWEET"
