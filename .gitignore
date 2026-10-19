@@ -12,3 +12,7 @@ __pycache__/
 # stock firmware images pulled from the phone (boot, dtbo, vbmeta...): never commit
 *.img
 *.img.*
+Claude outputs/guide.md
+completo2.txt
+fallo2.txt
+fallo.txt
