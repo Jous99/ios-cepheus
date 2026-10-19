@@ -83,6 +83,8 @@ for path in root.rglob('*.[ch]'):
     if new != text:
         path.write_text(new)
 PY
+mkdir -p EXTERNAL_HEADERS/sys
+cp "$(xcrun --sdk macosx --show-sdk-path)/usr/include/sys/qos.h" EXTERNAL_HEADERS/sys/
 pthread_sdk=$(xcrun --sdk macosx --show-sdk-path)
 cp "$pthread_sdk/usr/include/TargetConditionals.h" EXTERNAL_HEADERS/
 echo "Staged libpthread-514.100.2 ($pthread_sha) for SWEET"
