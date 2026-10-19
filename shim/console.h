@@ -3,7 +3,11 @@
 
 #define FB_BASE		0x9c000000UL	/* reserved-memory cont_splash_region */
 #define FB_W		1080
-#define FB_H		2400
+#ifdef BOARD_CEPHEUS
+#define FB_H		2340	/* Mi 9 panel (overlay CEPHEUS) */
+#else
+#define FB_H		2400	/* Redmi Note 10 Pro (sweet) */
+#endif
 #define FB_STRIDE	(FB_W * 4)	/* a8r8g8b8, matches mainline simplefb */
 
 #define RED	0xffff0000U
