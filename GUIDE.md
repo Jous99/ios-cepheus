@@ -20,9 +20,6 @@ Esta guía explica cómo probar el port de iOS (ios-sweet adaptado a cepheus, Xi
 - Xiaomi Mi Unlock Tool, si el bootloader aún no está desbloqueado.
 - Para QEMU: `qemu-system-aarch64` (Linux: `sudo apt install qemu-system-arm`; Windows: instalador oficial de QEMU).
 
-### Cuentas
-- Acceso al repositorio `Jous99/ios-cepheus` en GitHub, con permisos para lanzar workflows.
-- Acceso a Forgejo (`git.joustech.space`) si trabajas con el remoto `origin`.
 
 ---
 
