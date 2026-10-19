@@ -1,0 +1,22 @@
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c	2026-10-19 21:39:56.283162037 +0000
+@@ -782,9 +782,11 @@
+ 	 * max_cpus must be nailed down by the time PE_lockdown_iokit() finishes,
+ 	 * at the latest
+ 	 */
++	kernel_bootstrap_log("vm_set_restrictions");
+ 	vm_set_restrictions(machine_info.max_cpus);
+ 
+ 
++	kernel_bootstrap_log("kperf_init_early");
+ #if KPERF
+ 	kperf_init_early();
+ #endif
+@@ -792,6 +794,7 @@
+ 	/*
+ 	 *	Start the user bootstrap.
+ 	 */
++	kernel_bootstrap_log("bsd_init");
+ #ifdef  MACH_BSD
+ 	bsd_init();
+ #endif
