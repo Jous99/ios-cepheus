@@ -41,5 +41,8 @@ for name in ('hash/md5.c', 'codec/dec32le.c', 'codec/enc32le.c',
     (target / 'src' / name).parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source / 'src' / name, target / 'src' / name)
 shutil.copy2(source / 'LICENSE.txt', target / 'LICENSE.txt')
+for sub in ('symcipher', 'hash', 'codec'):
+    for f in (target / 'src' / sub).glob('*.c'):
+        f.write_text(f.read_text().replace('#include "inner.h"', '#include "../inner.h"'))
 PY
 echo "Staged BearSSL portable AES, MD5, SHA-1 and SHA-384/512 ($bearssl_sha) for SWEET"
