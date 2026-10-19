@@ -1,0 +1,20 @@
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c	2026-10-19 20:52:22.876113320 +0000
+@@ -218,9 +218,17 @@
+ 
+ TUNABLE(startup_debug_t, startup_debug, "startup_debug", 0);
+ 
++#if defined(__arm64__)
++#include <arm64/sweet_early.h>
++#endif
++
+ static inline void
+ kernel_bootstrap_log(const char *message)
+ {
++#if defined(__arm64__)
++	/* SWEET debug: marca en framebuffer, sin locks */
++	sweet_early_mark(8, message);
++#endif
+ 	if ((startup_debug & STARTUP_DEBUG_VERBOSE) &&
+ 	    startup_phase >= STARTUP_SUB_KPRINTF) {
+ 		kprintf("kernel_bootstrap: %s\n", message);
