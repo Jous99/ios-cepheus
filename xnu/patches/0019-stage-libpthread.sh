@@ -104,6 +104,11 @@ for path in (root / 'kern').rglob('*.[ch]'):
     if new != text:
         path.write_text(new)
 PY
+# Angle includes such as <pthread/qos.h> (used by private/pthread/qos_private.h)
+# resolve only through -I paths; EXTERNAL_HEADERS/ is one of them.
+mkdir -p EXTERNAL_HEADERS/pthread
+cp -R bsd/pthread/sweet_libpthread/include/pthread/. EXTERNAL_HEADERS/pthread/
+cp -R bsd/pthread/sweet_libpthread/private/pthread/. EXTERNAL_HEADERS/pthread/
 pthread_sdk=$(xcrun --sdk macosx --show-sdk-path)
 cp "$pthread_sdk/usr/include/TargetConditionals.h" EXTERNAL_HEADERS/
 echo "Staged libpthread-514.100.2 ($pthread_sha) for SWEET"
