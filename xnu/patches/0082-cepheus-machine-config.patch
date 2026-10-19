@@ -21,7 +21,7 @@ index 291a546..65749a4 100644
  				char name[32];
  				if (sweet_null_tee(name, sizeof(name))) {
 diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
-index a148608..1c9b8d9 100644
+index a148608..8dd41da 100644
 --- a/bsd/dev/sweet_keys.c
 +++ b/bsd/dev/sweet_keys.c
 @@ -4,7 +4,7 @@
@@ -33,47 +33,54 @@ index a148608..1c9b8d9 100644
  #include <sys/param.h>
  #include <sys/systm.h>
  #include <kern/clock.h>
-diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
-index 4da50d8..fc6776e 100644
---- a/bsd/dev/sweet_rpmh.c
-+++ b/bsd/dev/sweet_rpmh.c
-@@ -3,7 +3,7 @@
-  * Sole XNU apps-DRV owner, called from thread context with deep idle disabled.
-  * No sleep/wake programming, SPMI writes, GIC handler, or timeout recovery.
-  */
--#if defined(ARM64_BOARD_CONFIG_SWEET)
-+#if (defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_CEPHEUS))
- #include <sys/param.h>
- #include <sys/systm.h>
- #include <sys/errno.h>
-diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
-index 1981490..f25243b 100644
---- a/bsd/dev/sweet_spmi.c
-+++ b/bsd/dev/sweet_spmi.c
-@@ -5,7 +5,7 @@
-  * Init is serialized by the single built-in SweetBattery personality.
-  * Battery APIDs are disjoint from the existing keys' 008/4c1 APIDs.
-  */
--#if defined(ARM64_BOARD_CONFIG_SWEET)
-+#if (defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_CEPHEUS))
- #include <sys/param.h>
- #include <sys/systm.h>
- #include <machine/machine_routines.h>
-diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
-index 03defe6..7c06f8d 100644
---- a/bsd/dev/sweet_touch.c
-+++ b/bsd/dev/sweet_touch.c
-@@ -5,7 +5,7 @@
-  * No firmware/config upload or direct PMIC writes. Only IC data write:
-  * zero to GT9896's event status after reading a report. See touch2/report.md.
-  */
--#if defined(ARM64_BOARD_CONFIG_SWEET)
-+#if (defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_CEPHEUS))
- #include <sys/param.h>
- #include <sys/systm.h>
- #include <sys/errno.h>
+@@ -21,7 +21,21 @@ void sweet_keys_init(void);
+ #define KEYS_OBS_PA      0x0e600000u
+ #define KEYS_CNFG_PA     0x0c40a000u
+ #define KEYS_PON_RT      0x0810u
++#if defined(ARM64_BOARD_CONFIG_CEPHEUS)
++/* Mi 9: volume-up is GPIO6 (0-based DT cell 6) of the PM8150 at SID 0, not
++ * PM6150L GPIO2 at SID 4. Offsets: block base 0xc000 + 0x100 * pin. */
++#define KEYS_GPIO_PPID   0x0c0u
++#define KEYS_GPIO_RT     0xc610u
++#define KEYS_GPIO_MODE   0xc640u
++#define KEYS_GPIO_EN     0xc646u
++#define KEYS_GPIO_SUBTYPE 0xc605u
++#else
++#define KEYS_GPIO_PPID   0x4c1u
+ #define KEYS_GPIO_RT     0xc110u
++#define KEYS_GPIO_MODE   0xc140u
++#define KEYS_GPIO_EN     0xc146u
++#define KEYS_GPIO_SUBTYPE 0xc105u
++#endif
+ #define KEYS_NO_APID     0xffffu
+ 
+ static vm_offset_t keys_core, keys_obs, keys_cnfg;
+@@ -152,13 +166,13 @@ sweet_keys_init(void)
+ 		return;
+ 	}
+ 	keys_pon_apid = keys_find_apid(0x008, count);
+-	keys_gpio_apid = keys_find_apid(0x4c1, count);
++	keys_gpio_apid = keys_find_apid(KEYS_GPIO_PPID, count);
+ 	uint8_t pon = 0, gpio = 0, mode = 0, en = 0, subtype = 0;
+ 	bool pok = keys_read(keys_pon_apid, KEYS_PON_RT, &pon);
+ 	bool gok = keys_read(keys_gpio_apid, KEYS_GPIO_RT, &gpio);
+-	bool mok = keys_read(keys_gpio_apid, 0xc140, &mode);
+-	bool eok = keys_read(keys_gpio_apid, 0xc146, &en);
+-	bool sok = keys_read(keys_gpio_apid, 0xc105, &subtype);
++	bool mok = keys_read(keys_gpio_apid, KEYS_GPIO_MODE, &mode);
++	bool eok = keys_read(keys_gpio_apid, KEYS_GPIO_EN, &en);
++	bool sok = keys_read(keys_gpio_apid, KEYS_GPIO_SUBTYPE, &subtype);
+ 	printf("SWEET KEYS: arb=%#x apids=%u pon-apid=%u gpio4-apid=%u pon=%#x/%d gpio=%#x/%d mode=%#x/%d en=%#x/%d subtype=%#x/%d\n",
+ 	    keys_version, count, keys_pon_apid, keys_gpio_apid,
+ 	    pon, pok, gpio, gok, mode, mok, en, eok, subtype, sok);
+@@ -179,4 +193,4 @@ sweet_keys_init(void)
+ 		printf("SWEET KEYS: kernel_thread_start failed %d\n", kr);
+ 	}
+ }
+-#endif /* ARM64_BOARD_CONFIG_SWEET */
++#endif /* SWEET || CEPHEUS */
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
-index 6b926fe..dc24058 100644
+index 6b926fe..884a5e7 100644
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
 @@ -18,7 +18,7 @@
@@ -85,19 +92,31 @@ index 6b926fe..dc24058 100644
  #include <sys/param.h>
  #include <sys/systm.h>
  #include <sys/buf.h>
-diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
-index b6c1a41..c2dfa05 100644
---- a/bsd/dev/sweet_usb.c
-+++ b/bsd/dev/sweet_usb.c
-@@ -10,7 +10,7 @@
-  * DWC3 / PHY register blocks only when the GCC status registers say their
-  * power domain and clocks are on (an access to a gated block would hang).
-  */
--#if defined(ARM64_BOARD_CONFIG_SWEET)
+@@ -51,8 +51,10 @@ extern int hz;
+ static void sweet_log_start(void);
+ extern void sweet_sample_start(void);
+ extern void sweet_keys_init(void);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
+ extern void sweet_touch_init(void);
+ extern void sweet_usb_probe(void);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ #define REG_CAP         0x00
+ #define REG_IS          0x20
+@@ -657,9 +659,13 @@ sweet_ufs_init(void)
+ 	sweet_log_start();
+ 	sweet_sample_start();
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
 +#if (defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_CEPHEUS))
- #include <sys/param.h>
- #include <sys/systm.h>
- #include <kern/clock.h>
+ 	sweet_keys_init();
++#endif
++#if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	sweet_touch_init();
+ 	sweet_usb_probe();
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	return 0;
+ }
+ 
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
 index bb2a2bf..3e76fc2 100644
 --- a/bsd/kern/bsd_init.c
@@ -381,19 +400,6 @@ index 163fce1..d5b83a3 100644
  		{
  			char sname[32];
  			if (sweet_iolog(sname, sizeof(sname))) {
-diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
-index 9969739..5ff0731 100644
---- a/iokit/Kernel/arm/SweetBattery.cpp
-+++ b/iokit/Kernel/arm/SweetBattery.cpp
-@@ -4,7 +4,7 @@
-  * SOC is an UNCALIBRATED estimate, not a replacement for the Linux QG algo.
-  * See report.md for binary evidence, register provenance and integration.
-  */
--#if defined(ARM64_BOARD_CONFIG_SWEET)
-+#if (defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_CEPHEUS))
- #include <device/device_types.h> /* io_buf_ptr_t for private OSKext headers */
- #include <IOKit/IOLib.h>
- #include <IOKit/IOWorkLoop.h>
 diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
 index 92f3e26..c7249fe 100644
 --- a/iokit/KernelConfigTables.cpp

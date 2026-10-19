@@ -52,8 +52,10 @@ Datos extraídos del paquete oficial de MIUI 12.5.1 global para cepheus (`boot.i
 - [ ] **Hito 2:** launchd y el userland arrancan
 
 ### Fase 3: Entrada
-- [ ] Botones de volumen y encendido desde el PM8150 (`gpio-keys`)
+- [x] Botones: el arbitraje SPMI es el mismo que en sweet (verificado en el dtb). El volumen sube está en el GPIO6 del PM8150 (SID 0), así que `sweet_keys.c` usa constantes por placa (en `0082`)
+- [ ] Revisar la lectura de botones en el teléfono (diagnóstico `SWEET KEYS:` en el log)
 - [ ] Driver nuevo para el táctil ST FTS en SE17, con `st_fts_f1.ftb`
+- [ ] Touch, USB, RPMh y batería siguen siendo solo de sweet: hay que portarlos para cepheus
 - [ ] **Hito 3:** SpringBoard y Setup se pueden usar con el táctil
 
 ### Fase 4: Extras (no prioritarios)
