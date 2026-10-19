@@ -109,6 +109,9 @@ PY
 mkdir -p EXTERNAL_HEADERS/pthread
 cp -R bsd/pthread/sweet_libpthread/include/pthread/. EXTERNAL_HEADERS/pthread/
 cp -R bsd/pthread/sweet_libpthread/private/pthread/. EXTERNAL_HEADERS/pthread/
+# libpthread's include/pthread/qos.h is a wrapper that does #include_next, which
+# needs the SDK copy behind it. Ship the real SDK header in its place.
+cp "$(xcrun --sdk macosx --show-sdk-path)/usr/include/pthread/qos.h" EXTERNAL_HEADERS/pthread/qos.h
 pthread_sdk=$(xcrun --sdk macosx --show-sdk-path)
 cp "$pthread_sdk/usr/include/TargetConditionals.h" EXTERNAL_HEADERS/
 echo "Staged libpthread-514.100.2 ($pthread_sha) for SWEET"
