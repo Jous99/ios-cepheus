@@ -115,6 +115,13 @@ cp -R bsd/pthread/sweet_libpthread/private/pthread/. EXTERNAL_HEADERS/pthread/
 # libpthread's include/pthread/qos.h is a wrapper that does #include_next, which
 # needs the SDK copy behind it. Ship the real SDK header in its place.
 cp "$(xcrun --sdk macosx --show-sdk-path)/usr/include/pthread/qos.h" EXTERNAL_HEADERS/pthread/qos.h
+# The SDK qos.h includes <sys/_pthread/...> with angle brackets. xnu only ships
+# _pthread_types.h there, so add the rest without overwriting the existing file.
+sdk_path=$(xcrun --sdk macosx --show-sdk-path)
+mkdir -p EXTERNAL_HEADERS/sys/_pthread
+for h in "$sdk_path"/usr/include/sys/_pthread/*.h; do
+    [ -e "EXTERNAL_HEADERS/sys/_pthread/$(basename "$h")" ] || cp "$h" EXTERNAL_HEADERS/sys/_pthread/
+done
 pthread_sdk=$(xcrun --sdk macosx --show-sdk-path)
 cp "$pthread_sdk/usr/include/TargetConditionals.h" EXTERNAL_HEADERS/
 echo "Staged libpthread-514.100.2 ($pthread_sha) for SWEET"
