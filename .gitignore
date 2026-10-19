@@ -2,9 +2,13 @@
 backup/
 dtb/
 recovery/
+miui rom/
 # third-party/Apple sources fetched for reading
 research/
 shim/out/
 xnu/out/
 xnu/out-*/
 __pycache__/
+# stock firmware images pulled from the phone (boot, dtbo, vbmeta...): never commit
+*.img
+*.img.*
