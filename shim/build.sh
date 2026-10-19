@@ -5,7 +5,9 @@ cd "$(dirname "$0")"
 CC=aarch64-linux-gnu-gcc
 # BOARD=cepheus selects the Mi 9 framebuffer size; DTB overrides the base dtb
 BOARD=${BOARD:-sweet}
-DTB=${DTB:-../dtb/boot_unpacked/dtb}
+# cepheus: dt1.dtb is the SM8150 v2 variant (msm-id 339, rev 2) of the stock Mi 9 image
+if [ "$BOARD" = cepheus ]; then DTB_DEFAULT=../dtb/boot_unpacked/dt1.dtb; else DTB_DEFAULT=../dtb/boot_unpacked/dtb; fi
+DTB=${DTB:-$DTB_DEFAULT}
 BOARD_DEF="-DBOARD_$(echo $BOARD | tr a-z A-Z)"
 OBJCOPY=aarch64-linux-gnu-objcopy
 CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra $BOARD_DEF"

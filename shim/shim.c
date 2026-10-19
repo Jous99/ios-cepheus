@@ -12,7 +12,11 @@
 #include "loader.h"
 #include "ufs.h"
 
-#define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
+#ifdef BOARD_CEPHEUS
+#define IMEM_RESTART_REASON	0x146bf65cUL	/* SM8150 msm-imem@146bf000 restart_reason@65c */
+#else
+#define IMEM_RESTART_REASON	0x146aa65cUL	/* SM7150 msm-imem restart_reason@65c */
+#endif
 #define RESTART_BOOTLOADER	0x77665500U
 #define PSHOLD			0x0c264000UL
 
