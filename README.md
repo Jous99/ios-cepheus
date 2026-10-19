@@ -39,7 +39,8 @@ Datos extraídos del paquete oficial de MIUI 12.5.1 global para cepheus (`boot.i
 ### Fase 1: Arranque y consola en pantalla
 - [ ] Sonda de arranque que lea el FDT vivo de ABL: DRAM real (`dram-base`, `dram-size`) y framebuffer
 - [ ] Ajustar `mkadt.py` con la memoria real
-- [ ] Revisar `shim/` con las direcciones de cepheus (UFS, consola, MMU)
+- [x] Revisar `shim/`: framebuffer de 2340 con `BOARD=cepheus` (`-DBOARD_CEPHEUS`), dtb configurable con `DTB=`. Compila para sweet y cepheus. UFS y framebuffer coinciden con el dtb
+- [ ] Configuración de máquina CEPHEUS en el kernel: equivalente a `0004`, `0016`-`0019` y `SWEET.h` (GIC, timer, pthread, identidad del SoC)
 - [ ] Parche del kernel: que `SweetPlatformExpert` reconozca `xiaomi,cepheus`
 - [ ] Commit y CI de kernel en GitHub Actions (vigilar los minutos de macOS en repos privados)
 - [ ] **Hito 1:** el kernel escribe texto en pantalla con `fastboot boot`
