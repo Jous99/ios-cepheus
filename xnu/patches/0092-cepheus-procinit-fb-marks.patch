@@ -1,0 +1,25 @@
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -255,9 +255,14 @@
+ /*
+  * Initialize global process hashing structures.
+  */
++#if defined(__arm64__)
++#include <arm64/sweet_early.h>
++#endif
++
+ static void
+ procinit(void)
+ {
++	sweet_early_mark(30, "procinit enter");
+ 	/* SWEET debug: pasos de procinit, para ver donde se queda */
+ 	printf("SWEET procinit: 1 smr pid\n");
+ 	smr_hash_init(&pid_hash, maxproc / 4);
+@@ -268,6 +273,7 @@
+ 	printf("SWEET procinit: 4 hash ui\n");
+ 	uihashtbl = hashinit(maxproc / 16, M_PROC, &uihash);
+ 	printf("SWEET procinit: 5 done\n");
++	sweet_early_mark(31, "procinit done");
+ }
+ STARTUP(EARLY_BOOT, STARTUP_RANK_FIRST, procinit);
+ 
