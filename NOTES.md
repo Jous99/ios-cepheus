@@ -431,3 +431,33 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
      cpu_init, before arm_vm_init.
   5. panic hook at top of panic_trap_to_debugger: va_copy + _doprnt(fmt, &copy, sweet_early_putc, 16).
   Verify with tools/xnu-cc.py (compile+symbols) and patch-order simulation before the single CI run.
+
+## Estado (2026-10-20): cuelgue tras pthread y pruebas de RAM descartadas
+
+Pantalla del Mi 9 (cepheus): el kernel llega a "SWEET pthread: libpthread-514.100.2 registered"
+y ahí se queda. La marca "lockdown done" (parche 0089 + sweet_early_mark) no se ve, y el kernel
+sí contiene las cadenas (strings: 5 coincidencias). No sabemos si el kernel está colgado o si la
+consola deja de dibujar tras PE_lockdown_iokit.
+
+Orden de fases observado en pantalla: EARLY_BOOT (pthread) corre después de PE_lockdown_iokit.
+- pthread (sweet_pthread_register, parche 0019) es STARTUP_RANK_SECOND.
+- Funciones EARLY_BOOT de rango MIDDLE (candidatas al cuelgue, no imprimen nada):
+  pgz_init (zalloc.c), kmem_crypto_init (vm_kern.c), vm_pageout_create_gc_thread (vm_pageout.c),
+  vm_deferred_reclamation_init (vm_reclaim.c), personas_bootstrap (kern_persona.c),
+  iotrace_init (iotrace.c), set_awl_scratch_exists_flag... (debug.c), socd_client (rank 0).
+- Siguiente paso de depuración: marca antes y después de cada una de estas funciones.
+
+Pruebas de RAM (descartadas como canal de logs):
+- Marca en 0x9d000000 (carve-out framebuffer +16 MB) y en 0x1f0000000 (DRAM alto).
+- Reinicio por PSCI SYSTEM_RESET desde el shim: la marca NO sobrevive (count vuelve a 1).
+- Con el shim en la partición boot: tras el reinicio por PSCI el teléfono cae a fastboot;
+  no llegamos a la segunda ejecución desde boot. Causa no confirmada.
+- wdt=-1 quitado: no hubo reinicio en 10 minutos.
+- IMEM restart_reason: reset() escribe RESTART_BOOTLOADER (0x77665500). Probado RESTART_NORMAL
+  (0x77665501) sin efecto observable.
+
+Estado del dispositivo: boot restaurado desde backup/boot.img (stock, verificado ANDROID!).
+userdata contiene el root de iOS 16 (ios16-root.simg). El shim de prueba de RAM se quitó
+(shim/shim.c restaurado; la versión con la prueba está en shim/shim.c.bak_ramtest2).
+
+Sin UART: no tenemos adaptador, así que la depuración sigue dependiendo de la pantalla.

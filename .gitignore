@@ -16,3 +16,9 @@ Claude outputs/guide.md
 completo2.txt
 fallo2.txt
 fallo.txt
+
+# Logs de build
+logs/
+/Claude outputs
+/xnu-src
+/xnu/out_old
