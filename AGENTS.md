@@ -14,3 +14,10 @@
   recovery, modem, persist and the backups intact, and confirm each
   destructive step with the user before running it.
 - Keep device dumps, serial numbers and downloaded Apple artifacts out of git.
+
+## Convención de nombres (fase 2)
+- Código nuevo (parches, funciones, macros y mensajes de depuración) usa `cepheus_*` / `CEPHEUS`, y los comentarios de depuración dicen `CEPHEUS debug`.
+- Las guardas nuevas son `#if CEPHEUS` o `defined(CEPHEUS)`, nunca `SWEET`.
+- El código de sweet que ya existe no se renombra hasta la fase 3.
+- Strings que comparan el firmware o el kernel (`SWEETXNU`, `sweet-shim`) no se tocan.
+- Los parches nuevos empiezan en 0094.
