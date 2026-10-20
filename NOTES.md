@@ -1,4 +1,4 @@
-# iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
+# iOS 16 on cepheus (Mi 9, SM8150) - working notes
 
 ## Agent handoff / active work (2026-10-15, latest)
 
