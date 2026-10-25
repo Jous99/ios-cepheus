@@ -48,7 +48,7 @@ Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 - [ ] Medir en tu Mi 9: DRAM, `userdata` (first/last LBA) y dirección del framebuffer (`TODO-MEASURE.md`)
 - [ ] Comprobar `maxmem` / `owned_memory_size` en el ADT (ver nota en `TODO-MEASURE.md`)
 - [ ] Primer CI del kernel xnu-8796 compilando (`build-kernel-8796.yml`; vigilar los minutos de macOS)
-- [ ] Imagen UEFI `uefi-cepheus`: Mu-Silicium (`xiaomi-cepheus`) + DarwinBoot + BootShim
+- [ ] Imagen UEFI: receta y parche listos en `docs/uefi-cepheus.md` + `uefi/` (sin compilar ni probar)
 - [ ] **Hito 1:** el kernel escribe texto en pantalla con `fastboot boot`
 
 ### Fase 2: Almacenamiento y userland
@@ -79,6 +79,7 @@ Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 | `board.toml` | Descripción de la placa (**ver aviso de medidas en `MIGRATION.md`**) |
 | `xnu-8796/patches/` | Serie de parches que aplica el CI (0001-0082 y 0084) |
 | `xnu-8796/patches-extra/` | Parches de debug tuyos, portados; **no** se aplican por defecto |
+| `uefi/`, `docs/uefi-cepheus.md` | Parche de Mu-Silicium (`cepheusPkg` + UniXNU/DarwinBoot) y receta de construcción |
 | `xnu-8796/patches-disabled/` | Parches desactivados a propósito (hardware que la Mi 9 no tiene) |
 | `scripts/`, `kits/`, `configs/` | ADT, payload, plataforma y defconfig |
 | `.github/workflows/` | CI (`build-kernel-8796.yml` es el que corresponde a xnu-8796) |

@@ -124,3 +124,33 @@ roots = [
     "com.apple.iokit.IOHIDFamily",
     "com.apple.iokit.IOHIDEventDriver",
   ]
+
+# --- Firmware UEFI (migración 2026-10-25) ---------------------------------------------------------
+# Modelo: UniXNU-sheng/board.toml. Se construye con:  ./unixnu build firmware --uefi ../Mu-Silicium
+# SIN VERIFICAR en el teléfono. Antes hay que aplicar uefi/cepheusPkg-unixnu.patch a Mu-Silicium
+# (ver docs/uefi-cepheus.md). Los parches de Mu son los que aplica build_uefi.py de Mu-Silicium.
+[firmware]
+config = "cepheus"
+dsc = "Platforms/Xiaomi/cepheusPkg/cepheus.dsc"
+fd = "Build/cepheusPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+submodules = ["Binaries", "Common/Mu", "Common/Mu_OEM_Sample", "Silicium-ACPI", "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl"]
+patches = [
+  "Resources/MuPatches/AsmMacroLib.patch",
+  "Resources/MuPatches/Auth-Service.patch",
+  "Resources/MuPatches/Boot-Manager.patch",
+  "Resources/MuPatches/Timer.patch",
+  "Resources/MuPatches/Usb-Bus.patch",
+]
+packages = [
+  "{uefi}", "{uefi}/Platforms/Xiaomi", "{tree}/package", "{tree}/drivers/DarwinBoot", "{edk2}",
+  "{uefi}/Common/Mu", "{uefi}/Common/Mu_OEM_Sample", "{uefi}/Silicon/Qualcomm", "{uefi}/Silicon/Silicium",
+  "{uefi}/Silicium-ACPI", "{uefi}/Silicium-ACPI/Platforms/Xiaomi", "{uefi}/Silicium-ACPI/Silicon/Qualcomm",
+]
+
+[firmware.defines]
+DEVICE_MODEL = "cepheus"
+ENABLE_SECUREBOOT = "0"
+MEMORY_PROTECTION = "TRUE"
+SHIP_MODE = "FALSE"
+BUILDID_STRING = "cepheus-research"
+
