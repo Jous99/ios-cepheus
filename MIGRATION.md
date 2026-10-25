@@ -25,7 +25,8 @@ Sobre `xnu-8796.141.3` limpio (macOS 13.5): la serie 0001-0082 + 0084 aplica sin
 
 ## Documentación
 Se tradujeron al español `STATUS.md`, `TODO-MEASURE.md` y los documentos de `docs/` (los originales en chino están en `docs/original-zh/`).
-`docs/nabu-reference/` (notas históricas de la Pad 5) no se tradujo.
+También se tradujeron `docs/nabu-reference/` (notas históricas de la Pad 5), los comentarios en chino de `board.toml`, `kits/` y `scripts/`.
+El texto que ya estaba en inglés, los comandos y los identificadores se dejaron tal cual.
 
 ## Qué NO se hizo (decisiones tuyas)
 1. **IPSW:** `board.toml` apunta al iPad 17.7.11 (xnu-10063); tu proyecto usaba el iPhone X 16.7.16 con xnu-8796.

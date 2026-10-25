@@ -1,14 +1,14 @@
-# 状态快照
+# Resumen de estado
 
-> 本机是 **扩容版 nabu**：物理 DRAM **12 GiB**，实测自 TWRP 的 `/proc/meminfo`
-> （`MemTotal = 11766512 kB`，即 12 GiB 减去约 816 MB 给 modem/hyp/rmtfs）。
-> 因此 `dram_size = 0x300000000`、`owned_memory_size = 0x130000000` 是**为这台机器测出来的值**，
-> 不是标准 6/8 GB 机型上的数字。照抄其他项目的 `0x180000000`（6 GiB）会让 6 GiB 以上的
-> 物理内存对 Darwin 不可见。
+> Este equipo es una **nabu ampliada**: DRAM física de **12 GiB**, medida en el `/proc/meminfo` de TWRP
+> (`MemTotal = 11766512 kB`, es decir, 12 GiB menos unos 816 MB para modem/hyp/rmtfs).
+> Por eso `dram_size = 0x300000000` y `owned_memory_size = 0x130000000` son **valores medidos para esta máquina**,
+> no los de un modelo estándar de 6/8 GB. Copiar el `0x180000000` (6 GiB) de otros proyectos haría que la memoria física por encima de 6 GiB
+> fuera invisible para Darwin.
 
-## 里程碑：内核走到了 launchd
+## Hito: el kernel llegó a launchd
 
-**屏幕证据（2026-10-23 晚）**
+**Evidencia en pantalla (noche del 2026-10-23)**
 
 ```
 Process 1 exec of /sbin/launchd failed, errno 2
@@ -20,83 +20,83 @@ PC=18446744005117767160
 LR=18446744005111703156
 ```
 
-**内核完整走完了这条链：**
+**El kernel recorrió completa esta cadena:**
 
 ```
 bsd_autoconf()        ✅
   kminit()            ✅
-    IOsurfaceRoot::installMemoryRegions()   ✅   ← 之前以为卡在这里，其实没有
-bsd_init 后半段       ✅
+    IOsurfaceRoot::installMemoryRegions()   ✅   ← antes se creía que se atascaba aquí, pero no
+bsd_init, segunda mitad       ✅
   vfs_mountroot()     ✅
-  load_init_program() ✅   ← 解析出 /sbin/launchd
+  load_init_program() ✅   ← resuelve /sbin/launchd
     execve("/sbin/launchd")   ❌  errno 2 (ENOENT)
 ```
 
-**`errno 2` 是文件不存在 —— 不是内核问题，是根文件系统里没有那个文件。**
+**`errno 2` significa que el archivo no existe: no es un problema del kernel, sino que el sistema de archivos raíz no tiene ese archivo.**
 
-### 这推翻了三天来的判断
+### Esto desmonta el diagnóstico de tres días
 
-`IOsurfaceRoot::installMemoryRegions()` 那一行**从来不是终点**，它只是最后一条 kprintf。
-它之后紧接的 `dtrace_postinit()`、`inittodr()` 和条件编译的网络初始化都不打日志，所以
-「日志停止」被当成了「内核停止」。
+La línea de `IOsurfaceRoot::installMemoryRegions()` **nunca fue el final**, solo era el último kprintf.
+Lo que viene justo después (`dtrace_postinit()`, `inittodr()` y la inicialización de red de compilación condicional) no imprime logs, así que
+"el log se paró" se tomó por "el kernel se paró".
 
-真正一直缺的是**一个真正的根**，不是自研 surface。
+Lo que siempre faltó es **una raíz de verdad**, no un surface propio.
 
-## 本地 Linux 构建打通（提速 12 倍）
+## Compilación local en Linux funcionando (12 veces más rápida)
 
-| 项 | GitHub macOS runner | 本地 WSL Ubuntu |
+| Elemento | Runner macOS de GitHub | WSL Ubuntu local |
 |---|---|---|
-| 单轮构建 | 15–17 分钟 | **72 秒** |
-| 产物 | 49.2 MB | **49 MB** |
-| 可复现 | 只能靠 CI | 本机随时跑 |
+| Compilación por ronda | 15-17 minutos | **72 segundos** |
+| Producto | 49,2 MB | **49 MB** |
+| Reproducible | Solo con CI | Se puede ejecutar en la máquina cuando quieras |
 
-验证：
+Verificación:
 
 ```
 file            Mach-O 64-bit arm64 executable, flags:<NOUNDEFS|PIE>
-__TEXT vmaddr   0xfffffff007004000      ← 与原版 kernelcache 一致
+__TEXT vmaddr   0xfffffff007004000      ← igual que el kernelcache original
 symbols         22708
-nabu 探针       nabu_mark / nabu_mark_map / nabu_mark_num / nabu_mark_putc
-UFS 探测        nabu_ufs_register_probe.cpp
+Sondas nabu     nabu_mark / nabu_mark_map / nabu_mark_num / nabu_mark_putc
+Sondeo de UFS   nabu_ufs_register_probe.cpp
 sha256          c756ecdb88a9dd50156dc27d2cdf48a08ddf93fcf204040fa57804f814fc3c15
 ```
 
-**工具链**：`Allenwdk/xnu-linux-toolchain`（Ubuntu 24.04 / clang 18 / 12 核）
+**Cadena de herramientas**: `Allenwdk/xnu-linux-toolchain` (Ubuntu 24.04 / clang 18 / 12 núcleos)
 
-## 一路上解决的 18 个问题
+## 18 problemas resueltos por el camino
 
 ```
- 1  libdispatch 无 Ubuntu 包          → 源码编译 + 手写 .pc
- 2  toolchain/csh 是符号链接          → cp -L
- 3  xcrun 硬编码 /usr/bin/xcrun       → 软链
- 4  sysctl 硬编码 /usr/sbin/sysctl    → Darwin shim 替换
- 5  /bin/sh 是 dash                   → 指向 bash
- 6  bison/flex/m4 在 /usr/sbin        → 软链
- 7  hostcompat.h 不存在               → 自写
- 8  libc.h 不存在                     → 自写（OSAtomic / 页对齐）
- 9  copyfile.h / fcopyfile            → 自写
-10  setmode/getmode                   → 自写（who 位移 + mask 修正）
-11  TargetConditionals.h              → 自写，且只放两处
-12  sys/_types/_os_inline.h           → 自写并镜像到 compat 树
-13  mach/mach_init.h                  → 自写
-14  -Wno-* 不认识                     → -Wno-unknown-warning-option
-15  macOS clang 26 诊断名             → CCC_OVERRIDE_OPTIONS 逐条降级
-16  sed -i '' 是 BSD 语法             → 分支处理，且只在 Darwin 跑
-17  awk \( 在 GNU 保留反斜杠          → 做成 patch（zzzz-nabu-awk-parens）
-18  mockfs 双重链接（23 个重复符号）  → 去掉 force_load
+ 1  libdispatch no tiene paquete en Ubuntu → compilar desde fuente + .pc escrito a mano
+ 2  toolchain/csh es un enlace simbólico   → cp -L
+ 3  xcrun con /usr/bin/xcrun fijo          → enlace simbólico
+ 4  sysctl con /usr/sbin/sysctl fijo       → sustituido por un shim de Darwin
+ 5  /bin/sh es dash                        → apuntar a bash
+ 6  bison/flex/m4 están en /usr/sbin       → enlace simbólico
+ 7  hostcompat.h no existe                 → escrito a mano
+ 8  libc.h no existe                       → escrito a mano (OSAtomic / alineación de página)
+ 9  copyfile.h / fcopyfile                 → escrito a mano
+10  setmode/getmode                        → escrito a mano (desplazamiento de who + corrección de mask)
+11  TargetConditionals.h                   → escrito a mano, y solo en dos sitios
+12  sys/_types/_os_inline.h                → escrito a mano y replicado en el árbol compat
+13  mach/mach_init.h                       → escrito a mano
+14  -Wno-* no reconocidos                  → -Wno-unknown-warning-option
+15  nombres de diagnóstico de macOS clang 26 → CCC_OVERRIDE_OPTIONS, rebajando uno a uno
+16  sed -i '' es sintaxis BSD              → tratamiento por ramas, y solo se ejecuta en Darwin
+17  awk \( en GNU conserva la barra invertida → hecho parche (zzzz-nabu-awk-parens)
+18  doble enlazado de mockfs (23 símbolos duplicados) → se quita force_load
 ```
 
-## 下一步
+## Siguiente paso
 
-**唯一缺的是一份真正的根文件系统。**
+**Lo único que falta es un sistema de archivos raíz de verdad.**
 
 ```
 ./unixnu ipsw fetch                          # OS + Cryptex1,SystemOS
-./unixnu build userdata                      # SHNGROOT manifest + 两个窗口
+./unixnu build userdata                      # manifiesto SHNGROOT + dos ventanas
 fastboot flash userdata out/nabu/userdata/userdata-root.img
 ```
 
-已知：`[userdata]` 的 LBA 早实测好（`first_lba = 0x288C40` / `last_lba = 0x77BF3FA` /
-`lba_bytes = 4096`）。
+Sabido: los LBA de `[userdata]` ya se midieron hace tiempo (`first_lba = 0x288C40` / `last_lba = 0x77BF3FA` /
+`lba_bytes = 4096`).
 
-**不再是编译问题，不再是驱动问题 —— 是数据问题。**
+**Ya no es un problema de compilación ni de drivers: es un problema de datos.**

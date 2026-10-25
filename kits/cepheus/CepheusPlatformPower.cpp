@@ -1,24 +1,24 @@
-// CepheusPlatformPower — PMGR 骨架（SM8150 / cepheus）
+// CepheusPlatformPower — esqueleto de PMGR (SM8150 / cepheus)
 //
-// 地址与语义依据公共 cepheus DTS（见 docs/cepheus-dts-extract.md）：
+// Direcciones y semántica según el DTS público (ver docs/nabu-dts-extract.md; el original citaba docs/cepheus-dts-extract.md):
 //   apps_rsc: rsc@18200000  compatible "qcom,rpmh-rsc"
 //     bank0 0x18200000 +0x10000
 //     bank1 0x18210000 +0x10000
 //     bank2 0x18220000 +0x10000
 //   aop_cmd_db 0x85f20000 +0x20000 (qcom,cmd-db)
 //   smem       0x86000000 +0x200000
-//   apss_shared mailbox 0x17c00000 (只是 mailbox，不是 RPMh)
+//   apss_shared mailbox 0x17c00000 (solo es un mailbox, no es RPMh)
 //
-// 当前阶段只做「可验证的最小面」：
-//   - Probe(): 读 RSC 的版本/状态寄存器，确认 0x18200000 可访问且值合理
-//   - ReadAon()/WriteAon(): 仍是安全桩（返回 0 / 空操作）
-// 不写 TCS，避免早期 bring-up 阶段把整机搞挂。
+// En esta fase solo se hace la "superficie mínima verificable":
+//   - Probe(): lee los registros de versión/estado del RSC y confirma que 0x18200000 es accesible y que el valor es razonable
+//   - ReadAon()/WriteAon(): siguen siendo stubs seguros (devuelven 0 / no hacen nada)
+// No se escribe en TCS, para no colgar todo el equipo durante el bring-up temprano.
 
 #include <stdint.h>
 
 namespace cepheus {
 
-// ---- 物理地址（DTS 权威值）----
+// ---- Direcciones físicas (valores autoritativos del DTS) ----
 static constexpr uint64_t kRscBank0   = 0x18200000ULL;
 static constexpr uint64_t kRscBank1   = 0x18210000ULL;
 static constexpr uint64_t kRscBank2   = 0x18220000ULL;
@@ -34,15 +34,15 @@ static constexpr uint64_t kPdcBase    = 0x0b220000ULL;
 static constexpr uint64_t kGccBase    = 0x00100000ULL;
 static constexpr uint64_t kUfsHcBase  = 0x01d84000ULL;
 static constexpr uint64_t kUfsPhyBase = 0x01d87000ULL;
-static constexpr uint64_t kTimeBaseHz = 19200000ULL;    // 实测
+static constexpr uint64_t kTimeBaseHz = 19200000ULL;    // medido
 
-// ---- RSC DRV 寄存器（RPMh TCS 命令口）----
+// ---- Registros DRV del RSC (puerto de comandos TCS de RPMh) ----
 static constexpr uint32_t kRscDrvHwVersion   = 0x0000;
 static constexpr uint32_t kRscDrvCtlTcsDataHi = 0x0038;
 static constexpr uint32_t kRscDrvCtlTcsDataLo = 0x0040;
 static constexpr uint32_t kTcsAmcModeEnable   = (1u << 16);
 
-// AMC（Address/Mask/Command）命令字构造辅助，供下一阶段使用
+// Ayudas para construir la palabra de comando AMC (Address/Mask/Command), para la siguiente fase
 enum class RpmhCmd : uint32_t {
   kRead  = 0x1,
   kWrite = 0x2,
@@ -51,19 +51,19 @@ enum class RpmhCmd : uint32_t {
 };
 
 struct RpmhAmcCmd {
-  uint32_t message_id;   // cmd-db 里查到的 TCS 地址
-  uint32_t addr;         // 资源地址（来自 cmd-db）
+  uint32_t message_id;   // dirección del TCS encontrada en cmd-db
+  uint32_t addr;         // dirección del recurso (de cmd-db)
   uint32_t data;
-  uint32_t wait;         // 1 = 需要完成确认
+  uint32_t wait;         // 1 = requiere confirmación de finalización
   RpmhCmd  cmd;
 };
 
 class CepheusPlatformPower {
  public:
-  // 只读探测：确认 RPMh RSC 可访问。不做任何写操作。
+  // Sondeo de solo lectura: confirma que el RPMh RSC es accesible. No hace ninguna escritura.
   bool Probe();
 
-  // ApplePMGR slot 320 / 321 的最小替身
+  // Sustituto mínimo de los slots 320 / 321 de ApplePMGR
   uint64_t ReadAon(uint32_t index);
   void     WriteAon(uint32_t index, uint64_t value);
 
@@ -76,40 +76,40 @@ class CepheusPlatformPower {
 };
 
 bool CepheusPlatformPower::Probe() {
-  // TODO(step 1): 用真实 MMIO 读替换占位实现（UEFI 侧先 MapFixedAddress，
-  //               XNU 侧用 IOMemoryMap）。这里只保留结构，避免误写寄存器。
+  // TODO(paso 1): sustituir la implementación provisional por lecturas MMIO reales (en UEFI primero MapFixedAddress,
+  //               en XNU con IOMemoryMap). Aquí solo se conserva la estructura, para evitar escribir registros por error.
   ver_[0] = 0;
   ver_[1] = 0;
   ver_[2] = 0;
 
-  // TODO(step 2): 校验 bank0..2 的 HW_VERSION 是否同一家族（预期非 0 且一致）
-  // TODO(step 3): 从 cmd-db 里按 "sleep"/"wake"/"active" 查到 TCS 基址
-  // TODO(step 4): 预留 SMEM 里的 rpmh 通道（用于 ack 回读）
+  // TODO(paso 2): comprobar que el HW_VERSION de bank0..2 es de la misma familia (se espera distinto de 0 e igual)
+  // TODO(paso 3): en cmd-db, buscar la base del TCS por "sleep"/"wake"/"active"
+  // TODO(paso 4): reservar el canal rpmh en SMEM (para releer el ack)
 
-  // 下一阶段才能置 true：必须先完成 step 1..3
+  // Solo se podrá poner a true en la siguiente fase: antes hay que completar los pasos 1..3
   probed_ = false;
   return probed_;
 }
 
 uint32_t CepheusPlatformPower::RscHwVersion(uint64_t /*bank*/) const {
-  return 0;  // TODO: MMIO 读 (bank + kRscDrvHwVersion)
+  return 0;  // TODO: lectura MMIO (bank + kRscDrvHwVersion)
 }
 
 uint64_t CepheusPlatformPower::ReadAon(uint32_t index) {
   (void)index;
-  // TODO: 组 RpmhAmcCmd{cmd=kRead} → 写 TCS_DATA_HI/LO → 等 DRV completion → 取 data
+  // TODO: armar RpmhAmcCmd{cmd=kRead} → escribir TCS_DATA_HI/LO → esperar la finalización del DRV → obtener data
   return 0;
 }
 
 void CepheusPlatformPower::WriteAon(uint32_t index, uint64_t value) {
   (void)index;
   (void)value;
-  // TODO: 同上，cmd=kWrite。TCS 是共享资源，必须先做串行化 + 超时保护。
+  // TODO: igual, con cmd=kWrite. El TCS es un recurso compartido: primero hay que serializar y poner protección por timeout.
 }
 
 }  // namespace cepheus
 
-// 供 cepheus-platform-power.patch 在 bsd_init.c 里调用
+// Lo llama cepheus-platform-power.patch en bsd_init.c
 extern "C" void cepheus_pmgr_run(void) {
   static cepheus::CepheusPlatformPower pmgr;
   pmgr.Probe();

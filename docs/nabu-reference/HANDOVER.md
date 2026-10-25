@@ -1,97 +1,97 @@
-# nabu XNU 移植：交接文档
+# Port de XNU a nabu: documento de traspaso
 
-**交接时间**：2026-10-23
-**交接原因**：新窗口接手，单线推进
-**当前状态**：可复现基线，checkpoint 123
+**Fecha del traspaso**: 2026-10-23
+**Motivo del traspaso**: una ventana nueva toma el relevo, avanzando en una sola línea
+**Estado actual**: línea base reproducible, checkpoint 123
 
-> 早期路径（探针注入方案、`boot_args.Video` 的发现、MARK 方案的来历）记录在
-> **`HANDOVER-legacy.md`**。本文是入口。
-
----
-
-## 一、三十秒了解现状
-
-**能做什么**：CI 构建内核（13 分钟）→ 打包 payload → 刷机 → 真机跑到
-`IOsurfaceRoot::installMemoryRegions()` 停住，屏幕显示 checkpoint `123` 和 16 个彩色方块。
-
-**不能做什么**：根文件系统没挂上，`launchd` 起不来，没有画面。
-
-**下一步**：先确认那个「停住」是真死路还是只是日志中断（第五节）。
+> El camino temprano (el método de inyección de sondas, el descubrimiento de `boot_args.Video`, el origen del método MARK) está en
+> **`HANDOVER-legacy.md`**. Este documento es la entrada.
 
 ---
 
-## 二、必须知道的六条硬事实
+## I. El estado actual en treinta segundos
 
-### 1. 内核日志的两个开关都要关
+**Qué se puede hacer**: compilar el kernel en el CI (13 minutos) → empaquetar el payload → flashear → en el teléfono real llega a
+`IOsurfaceRoot::installMemoryRegions()` y se detiene; en pantalla se ve el checkpoint `123` y 16 bloques de colores.
+
+**Qué no se puede hacer**: no se monta el sistema de archivos raíz, `launchd` no arranca, no hay imagen.
+
+**Siguiente paso**: primero confirmar si ese "se detiene" es un callejón sin salida real o solo un corte del log (sección V).
+
+---
+
+## II. Seis hechos duros que hay que conocer
+
+### 1. Hay que desactivar los dos interruptores del log del kernel
 
 ```c
 // pe_kprintf.c
-SECURITY_READ_ONLY_LATE(bool) disable_serial_output  = false;  // 必改
-SECURITY_READ_ONLY_LATE(bool) disable_kprintf_output = false;  // 必改
+SECURITY_READ_ONLY_LATE(bool) disable_serial_output  = false;  // hay que cambiarlo
+SECURITY_READ_ONLY_LATE(bool) disable_kprintf_output = false;  // hay que cambiarlo
 ...
 if (!disable_serial_output && !disable_kprintf_output) { ... }
 ```
 
-**两个默认都是 `true`**，只改一个不会有任何输出。
+**Los dos valen `true` por defecto**; cambiar solo uno no produce ninguna salida.
 
-### 2. `PE_kputc` 必须无条件赋值
+### 2. `PE_kputc` hay que asignarlo incondicionalmente
 
-`PE_init_kprintf` 跑在 `STARTUP(KPRINTF)`，**早于** framebuffer 映射。所以不能写
-`if (nabu_console_fb_ready()) PE_kputc = nabu_mark_putc;` —— 条件永远为假，hook 永不安装。
+`PE_init_kprintf` corre en `STARTUP(KPRINTF)`, **antes** del mapeo del framebuffer. Por eso no se puede escribir
+`if (nabu_console_fb_ready()) PE_kputc = nabu_mark_putc;` —— la condición es siempre falsa y el hook nunca se instala.
 
-### 3. `0x9000000` 的 UART 映射只能在 QEMU
+### 3. El mapeo del UART en `0x9000000` solo sirve en QEMU
 
-这是 **checkpoint 50 的真凶**。`0x9000000` 在 QEMU virt 是 PL011，在 SM8150 上是别的寄存器。
-`ml_io_map_unmappable` 在两边**都返回成功**，第一个字符写进真实硬件就崩。
+Este es el **verdadero culpable del checkpoint 50**. `0x9000000` es un PL011 en QEMU virt, y en SM8150 es otro registro.
+`ml_io_map_unmappable` **devuelve éxito en ambos**, y al escribir el primer carácter en el hardware real se cuelga.
 
-现方案：按面板尺寸判断（QEMU 800x600 / nabu 1600x2560），只在 `w <= 1024` 时映射。
+Solución actual: decidir por el tamaño del panel (QEMU 800x600 / nabu 1600x2560) y mapear solo cuando `w <= 1024`.
 
-### 4. ADT 里必须有 `RAMDisk` 节点
+### 4. El ADT debe tener el nodo `RAMDisk`
 
-否则 DarwinBoot 报 `boot refused: Compromised Data`：
+Si no, DarwinBoot da `boot refused: Compromised Data`:
 
 ```
-/chosen/memory-map/RAMDisk   16 bytes，两半全 0
+/chosen/memory-map/RAMDisk   16 bytes, las dos mitades a 0
 ```
 
-`make-nabu-adt.py --data-ramdisk` 会生成。`board.toml` 的 `[payload.adt]` **只有
-`packed_data_ramdisk`，没有普通 `data_ramdisk`** —— 走官方流程时这是个缺口。
+`make-nabu-adt.py --data-ramdisk` lo genera. El `[payload.adt]` de `board.toml` **solo tiene
+`packed_data_ramdisk`, no el `data_ramdisk` normal** —— por el flujo oficial, esto es un hueco.
 
-### 5. Xcode 26.0.1 的新警告要在三处抑制
+### 5. Los nuevos avisos de Xcode 26.0.1 hay que suprimirlos en tres sitios
 
-`-Wunnecessary-virtual-specifier` 在 `-Weverything -Werror` 下变错误，`OSSymbol.h` 触发。
-三个独立位置各有自己的 flag 列表：
+`-Wunnecessary-virtual-specifier` se convierte en error con `-Weverything -Werror`; lo dispara `OSSymbol.h`.
+Hay tres sitios independientes, cada uno con su propia lista de flags:
 
-| 位置 | 处理 |
+| Sitio | Tratamiento |
 |---|---|
-| `makedefs/MakeInc.def` 的 `WARNFLAGS_STD` | `build-xnu-4k-baseline.sh` 直接注入 |
-| `installhdrs` 的 make 调用 | 传 `CFLAGS_EXTRA` |
-| `build-arm-driver.py` / `audit-storage-interface.py` | 各自补 `-Wno-*` |
+| `WARNFLAGS_STD` de `makedefs/MakeInc.def` | `build-xnu-4k-baseline.sh` lo inyecta directamente |
+| la llamada a make de `installhdrs` | pasar `CFLAGS_EXTRA` |
+| `build-arm-driver.py` / `audit-storage-interface.py` | cada uno añade sus `-Wno-*` |
 
-### 6. `kernel.py` 冷构建跑两遍
+### 6. La compilación en frío de `kernel.py` corre dos veces
 
-第一遍只生成 compile record，**故意清空** 5 个变量。任何「合格基线」gate 都会在第一遍拦截。
-现方案：`build-xnu-4k-baseline.sh` 开头检测 `startup.o.json` 不存在就整体降级。
+La primera pasada solo genera el compile record y **vacía a propósito** 5 variables. Cualquier gate de "línea base válida" salta en la primera pasada.
+Solución actual: al principio de `build-xnu-4k-baseline.sh`, si no existe `startup.o.json`, se degrada todo.
 
 ---
 
-## 三、可复现基线
+## III. Línea base reproducible
 
-| 项 | 值 |
+| Elemento | Valor |
 |---|---|
-| 构建 | `39905065571` / 13 分钟 / success |
-| 内核 | `kernel.macho` 49.2 MB |
+| Compilación | `39905065571` / 13 minutos / success |
+| Kernel | `kernel.macho` 49,2 MB |
 | runner | `macos-26` + Xcode 26.6 |
-| defconfig | **9 个开关** |
-| `[kernel] archives` | **8 个** |
-| prelink roots | 20 个 |
-| 分支 | `main`（永远保持可构建可刷机）|
+| defconfig | **9 interruptores** |
+| `[kernel] archives` | **8** |
+| prelink roots | 20 |
+| Rama | `main` (siempre compilable y flasheable)|
 
-**恢复命令**：
+**Comandos de recuperación**:
 ```bash
 gh run list --repo Lux12138/unixnu-nabu --limit 1 --workflow build-kernel.yml
 gh run download <id> --repo Lux12138/unixnu-nabu -n kernel-nabu -D C:\Temp\nabu-base
-# gh run download 常失败，用 API 直连：
+# gh run download falla a menudo; usa la API directamente:
 #   curl.exe -sL -H "Authorization: token $(gh auth token)" -o out.zip \
 #     https://api.github.com/repos/Lux12138/unixnu-nabu/actions/artifacts/<AID>/zip
 wsl -e bash -c 'KM=/mnt/c/Temp/nabu-base/kernel/kernel.macho bash /mnt/c/Temp/payload2.sh'
@@ -102,120 +102,120 @@ cd C:\platform-tools
 
 ---
 
-## 四、今天最大的教训
+## IV. La mayor lección de hoy
 
-> **把「启用官方全部特性」当成还债，代价是十几轮构建。**
+> **Tratar "activar todas las funciones oficiales" como pagar una deuda costó una docena de rondas de compilación.**
 
 `CONFIG_XNU_BOOT_PROGRESS` / `NATIVE_UFS` / `NATIVE_AES` / `VIRTIO_BLOCK` / `OWNER_ROOT_AUDIT`
-**不是开关**，是一整套互相依赖的合格基线：
+**No son interruptores**, sino un conjunto entero de líneas base válidas que dependen unas de otras:
 
-- `boot-progress` 实现在 `UniXNU-sheng/kits/sheng/BootProgress.c`（82 KB）+ 3 个探针 ≈ **136 KB**
-- 它的 builder（`build-boot-progress.py`）在 **fork 和 upstream 两个 UniXNU 仓库里都不存在**
-- 启用后触发 gate 链：AES closure → CPU/pthread → owner crypto → virtio archive，**修一个冒一个**
-- `kernel.py` 的 bootstrap pass 故意清空这些变量 → gate 在冷构建时**必然**冲突
+- La implementación de `boot-progress` está en `UniXNU-sheng/kits/sheng/BootProgress.c` (82 KB) + 3 sondas ≈ **136 KB**
+- Su builder (`build-boot-progress.py`) **no existe ni en el fork ni en el upstream de UniXNU**
+- Al activarlo salta la cadena de gates: AES closure → CPU/pthread → owner crypto → virtio archive, **arreglas uno y sale otro**
+- El bootstrap pass de `kernel.py` vacía a propósito estas variables → el gate **choca sí o sí** en la compilación en frío
 
-**立的规矩**：
-1. **bring-up 中途不改 defconfig**
-2. **构建链排障超过 2 轮就回退**
-3. **`main` 永远可构建**
+**Reglas que se fijaron**:
+1. **No cambiar defconfig a mitad del bring-up**
+2. **Si depurar la cadena de compilación pasa de 2 rondas, retroceder**
+3. **`main` siempre compilable**
 
 ---
 
-## 五、下一步（按顺序，别跳）
+## V. Siguientes pasos (en orden, sin saltarse ninguno)
 
-### 第一步：排除「日志中断」的可能（半天）
+### Paso 1: descartar la posibilidad de "corte del log" (medio día)
 
-**现在的假设可能是错的。** 我们一直认为 IOSurface 是死路，但**从没验证内核是否还在跑**。
+**La hipótesis actual puede ser errónea.** Siempre creímos que IOSurface era un callejón sin salida, pero **nunca verificamos si el kernel seguía corriendo**.
 
 ```c
-bsd_autoconf();                              // 当前停在这里面
-kprintf("NABU: bsd_autoconf returned\n");    // 加这一行
+bsd_autoconf();                              // ahora se atasca dentro de esto
+kprintf("NABU: bsd_autoconf returned\n");    // añade esta línea
 ```
 
-- **有输出** → 内核还活着，IOSurface 只是日志断点 → **直接进第二步**
-- **无输出** → 确认是死路 → 走第三步
+- **Sale algo** → el kernel sigue vivo, IOSurface solo era un corte del log → **pasar directamente al paso 2**
+- **No sale nada** → se confirma el callejón sin salida → ir al paso 3
 
-### 第二步：根文件系统（1–2 周）
+### Paso 2: sistema de archivos raíz (1-2 semanas)
 
-依据 `/guide/userdata` + `/concepts/userdata`：
+Según `/guide/userdata` + `/concepts/userdata`:
 
 ```
-1. board.toml 的 [ipsw] fetch 加 "OS" 和 "Cryptex1,SystemOS"   ← 已加，未验证
-2. ./unixnu ipsw fetch          # 拉两个组件，几 GB
-3. ./unixnu build userdata      # SHNGROOT manifest + 两个窗口
-4. [payload.adt] 设 root_match_volume_uuid = <OS 卷的 UUID>
+1. añadir "OS" y "Cryptex1,SystemOS" al fetch de [ipsw] de board.toml   ← ya añadido, sin verificar
+2. ./unixnu ipsw fetch          # baja dos componentes, varios GB
+3. ./unixnu build userdata      # manifiesto SHNGROOT + dos ventanas
+4. en [payload.adt] poner root_match_volume_uuid = <UUID del volumen OS>
 5. fastboot flash userdata out/nabu/userdata/userdata-root.img
-6. 观察是否挂上、launchd 是否起来
+6. observar si se monta y si arranca launchd
 ```
 
-**已知**：`[userdata]` 的 LBA 早实测好（`first_lba = 0x288C40` /
-`last_lba = 0x77BF3FA` / `lba_bytes = 4096`）。
+**Sabido**: los LBA de `[userdata]` ya se midieron hace tiempo (`first_lba = 0x288C40` /
+`last_lba = 0x77BF3FA` / `lba_bytes = 4096`).
 
-### 第三步：显示（3–4 周，只在第二步之后）
+### Paso 3: pantalla (3-4 semanas, solo después del paso 2)
 
-照 `UniXNU-sheng`：自研 `IOCoreSurfaceRoot` + `AppleCLCD`，注册进
-`iokit/KernelConfigTables.cpp`，并在 platform expert 里给 `arm-io` 子节点建 nub。
+Siguiendo `UniXNU-sheng`: `IOCoreSurfaceRoot` + `AppleCLCD` propios, registrados en
+`iokit/KernelConfigTables.cpp`, y en el platform expert crear nubs para los hijos de `arm-io`.
 
-**不要先做这一步** —— 它解决「看不看得见」，不是「起不起得来」。
-
----
-
-## 六、参考物
-
-| 参照 | 用途 |
-|---|---|
-| **`UniXNU-sheng`** | **唯一正确的参照**：roots / archives / defconfig 完整例子 |
-| `UniXNU/UniXNU` | 框架本体；我们的 fork 落后 163 commit，且不能直接换（`-mach_msg2`）|
-| `glebenekt/ios-nabu` | 同设备、iPadOS 16.6.1、83 补丁到 SpringBoard |
-| `unixnu.com` | 官方文档 |
-
-**文档的两个误导点**（踩过）：
-1. `/guide/debugging` 把 `boot-progress` 写成通用功能，实为 sheng 专属 136 KB
-2. `macos-26` 镜像上**没有** Xcode 26.6，只有 26.0 / 26.0.1
+**No hacer este paso primero** —— resuelve "si se ve", no "si arranca".
 
 ---
 
-## 七、工具清单
+## VI. Material de referencia
 
-| 工具 | 用途 |
+| Referencia | Uso |
 |---|---|
-| `C:\Temp\auto\watch.ps1` | 一分钟轮询构建 |
-| `C:\Temp\payload2.sh` | 打包 payload（**注意**：手动调 `make-nabu-adt.py`，绕过官方 `build payload`）|
-| `C:\Temp\auto\shot.ps1` | QEMU 启动 + 截图 |
-| `C:\Temp\findsym.py` | 内核符号反查 |
+| **`UniXNU-sheng`** | **La única referencia correcta**: ejemplo completo de roots / archives / defconfig |
+| `UniXNU/UniXNU` | El framework en sí; nuestro fork va 163 commits por detrás y no se puede cambiar sin más (`-mach_msg2`)|
+| `glebenekt/ios-nabu` | Mismo dispositivo, iPadOS 16.6.1, 83 parches hasta SpringBoard |
+| `unixnu.com` | Documentación oficial |
 
-**QEMU 参数（缺一个都不行）**：
+**Dos puntos engañosos de la documentación** (ya pisados):
+1. `/guide/debugging` presenta `boot-progress` como función general, pero en realidad es de sheng, de 136 KB
+2. La imagen `macos-26` **no tiene** Xcode 26.6, solo 26.0 / 26.0.1
+
+---
+
+## VII. Lista de herramientas
+
+| Herramienta | Uso |
+|---|---|
+| `C:\Temp\auto\watch.ps1` | sondeo de la compilación cada minuto |
+| `C:\Temp\payload2.sh` | empaqueta el payload (**ojo**: llama a mano a `make-nabu-adt.py`, saltándose el `build payload` oficial)|
+| `C:\Temp\auto\shot.ps1` | arranque de QEMU + captura de pantalla |
+| `C:\Temp\findsym.py` | búsqueda inversa de símbolos del kernel |
+
+**Parámetros de QEMU (no puede faltar ninguno)**:
 ```
 -M virt -cpu max -m 8192 -smp 1
 -drive if=pflash,...,file=edk2-aarch64-code.fd
--drive if=none,id=esp,...,file=fat:<ESP目录>
+-drive if=none,id=esp,...,file=fat:<directorio ESP>
 -device virtio-blk-pci,drive=esp -device ramfb
 -display none -serial file:<log>
 ```
-`-cpu max`（cortex-a72 不认 `MSR S3_0_C4_C1_4`）；`-m 8192`（4096 时 DarwinBoot 报
-`Out of Resources`）。
+`-cpu max` (cortex-a72 no reconoce `MSR S3_0_C4_C1_4`); `-m 8192` (con 4096 DarwinBoot da
+`Out of Resources`).
 
 ---
 
-## 八、文件地图
+## VIII. Mapa de archivos
 
-| 文件 | 作用 |
+| Archivo | Función |
 |---|---|
-| `board.toml` | 板级配置：prelink roots / archives / userdata / payload |
-| `configs/nabu_defconfig` | 9 个开关（**别乱加**）|
-| `patches/xnu/*.patch` | 内核补丁，按名字排序应用 |
-| `.github/workflows/build-kernel.yml` | CI（17 步，含 `build payload`）|
-| `STATUS.md` | 当前状态快照 |
-| `FLOW.md` | 流程图（七阶段 + 两条路线）|
-| `HANDOVER-legacy.md` | 早期路径（探针方案来历）|
+| `board.toml` | Configuración de la placa: prelink roots / archives / userdata / payload |
+| `configs/nabu_defconfig` | 9 interruptores (**no añadir por añadir**)|
+| `patches/xnu/*.patch` | Parches del kernel, se aplican por orden de nombre |
+| `.github/workflows/build-kernel.yml` | CI (17 pasos, incluido `build payload`)|
+| `STATUS.md` | Resumen del estado actual |
+| `FLOW.md` | Diagrama de flujo (siete etapas + dos rutas)|
+| `HANDOVER-legacy.md` | Camino temprano (origen del método de sondas)|
 
-**外部依赖**：
-- `C:\Users\Administrator\Documents\UniXNU` — `UniXNU` 仓库本地 clone，**CI 实际用的是它 push 到 fork 的版本**（这点很重要：改本地不 push，CI 看不到）
-- `C:\Users\Administrator\Desktop\unixnu-nabu-kernel-ufs` — payload 与 boot image 工作目录
+**Dependencias externas**:
+- `C:\Users\Administrator\Documents\UniXNU` — clon local del repo `UniXNU`; **el CI usa en realidad la versión que se sube (push) al fork** (esto es importante: cambiar lo local sin push, el CI no lo ve)
+- `C:\Users\Administrator\Desktop\unixnu-nabu-kernel-ufs` — directorio de trabajo del payload y de la boot image
 
 ---
 
-## 九、新窗口的第一条命令
+## IX. El primer comando de la ventana nueva
 
 ```powershell
 cd C:\Users\Administrator\Documents\unixnu-nabu-gh
@@ -224,4 +224,4 @@ Get-Content STATUS.md | Select-Object -First 60
 gh run list --repo Lux12138/unixnu-nabu --limit 3 --workflow build-kernel.yml
 ```
 
-**然后从第五节第一步开始。**
+**Luego, empezar por el primer paso de la sección V.**

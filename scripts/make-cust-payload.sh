@@ -1,6 +1,6 @@
 #!/bin/bash
-# 鐢熸垚 cust 鍒嗗尯闀滃儚锛?4MB FAT锛夛紝鍐呭惈 UniXNU 閰嶇疆 + XNU 鍐呮牳 + ADT
-# 鐢ㄦ硶: bash make-cust-payload.sh <kernel.macho> <kernel.macho.adt> <output.img>
+# Genera la imagen de la partición cust (FAT de 64 MB), con la configuración de UniXNU + kernel XNU + ADT
+# Uso: bash make-cust-payload.sh <kernel.macho> <kernel.macho.adt> <output.img>
 set -e
 K="${1:?kernel.macho}"
 A="${2:?kernel.macho.adt}"
@@ -85,9 +85,9 @@ dd if=/dev/zero of="$OUT" bs=1M count=64 status=none
 mkfs.vfat -n NABUCUST "$OUT" > /dev/null
 ( cd "$STAGE" && mcopy -i "$OUT_ABS" -s EFI ::/ )
 
-echo "=== 鍐呭鏍￠獙 ==="
+echo "=== Verificación del contenido ==="
 mdir -i "$OUT" -/ ::/EFI/UniXNU/Payloads
 ls -l "$OUT"
 echo
-echo "鍒峰叆: fastboot flash cust $OUT"
+echo "Para flashear: fastboot flash cust $OUT"
 rm -rf "$STAGE"

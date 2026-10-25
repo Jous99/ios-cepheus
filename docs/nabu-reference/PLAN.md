@@ -1,198 +1,198 @@
-# nabu XNU 移植：参考项目的路径与我们的可行性方案
+# Port de XNU a nabu: la ruta de los proyectos de referencia y nuestro plan de viabilidad
 
-生成时间：2026-10-22
+Generado: 2026-10-22
 
 ---
 
-## 一、参考项目的真实规模
+## I. El tamaño real de los proyectos de referencia
 
-| 项目 | 内核版本 | 补丁规模 | 到达状态 |
+| Proyecto | Versión del kernel | Tamaño de parches | Estado alcanzado |
 |---|---|---|---|
-| **glebenekt/ios-nabu** | xnu-8796 | **83 个 patch / 1.58 MB** | XNU 上真机、UFS 根可读写、**launchd / SpringBoard / backboardd 启动**、显示服务注册 |
-| **oosexgang/hackios** | xnu-8796 | **单文件 119 KB** | 锁屏/桌面/设置/Safari 可用（Adreno GPU）|
-| **IssacL04/Pagani** | BCM2837 配置复用 | 若干 | 越过分配器断言，到 BSD setconf |
-| **我们（Lux12138）** | **xnu-10063** | 约 20 个自研 patch | **内核到 bsd_autoconf 之后，卡 IOSurface** |
+| **glebenekt/ios-nabu** | xnu-8796 | **83 parches / 1,58 MB** | XNU en teléfono real, raíz UFS de lectura/escritura, **launchd / SpringBoard / backboardd arrancan**, servicios de pantalla registrados |
+| **oosexgang/hackios** | xnu-8796 | **un solo archivo de 119 KB** | pantalla de bloqueo/escritorio/ajustes/Safari funcionan (GPU Adreno)|
+| **IssacL04/Pagani** | reutiliza la config BCM2837 | varios | supera las aserciones del asignador, llega a setconf de BSD |
+| **Nosotros (Lux12138)** | **xnu-10063** | unos 20 parches propios | **kernel hasta después de bsd_autoconf, atascado en IOSurface** |
 
-**关键差异**：两个成熟项目都用 **xnu-8796**，我们坚持 **10063**。
-补丁**不能直接移植**，但**阶段划分和方法论可以照搬**。
+**Diferencia clave**: los dos proyectos maduros usan **xnu-8796**; nosotros insistimos en **10063**.
+Los parches **no se pueden portar directamente**, pero **la división en etapas y la metodología sí se pueden copiar tal cual**.
 
 ---
 
-## 二、ios-nabu 的 83 个补丁，实际是一条五阶段路径
+## II. Los 83 parches de ios-nabu son en realidad un camino de cinco etapas
 
-### 阶段 1｜让内核能启动（0001–0020，20 个）
+### Etapa 1: Que el kernel pueda arrancar (0001–0020, 20 parches)
 
-| 补丁 | 作用 |
+| Parche | Función |
 |---|---|
-| 0001/0002/0005 | 新 clang 的编译修复 |
-| **0003/0010/0012** | **framebuffer serial console、早期 fb 调试、ttbr0 之后保留 console** |
-| 0004/0006–0009 | machine config、开源 asm pmap、stub Apple 内部头文件、补 closed lib 空洞 |
-| 0011 | physmap 对齐补齐 |
-| **0013/0014** | **RNG 不依赖 corecrypto**（`vm_kern.c`，97 行）|
-| **0015** | **trust cache 运行时不可用** |
-| **0016/0017/0018** | **device tree platform expert、虚拟 timer IRQ、boot CPU 驱动** |
-| **0019** | **builtin pthread**（不是 prelink！）|
+| 0001/0002/0005 | Arreglos de compilación para el clang nuevo |
+| **0003/0010/0012** | **consola serie por framebuffer, depuración temprana del fb, conservar la consola tras ttbr0** |
+| 0004/0006–0009 | machine config, asm pmap de código abierto, stubs de headers internos de Apple, rellenar huecos de bibliotecas cerradas |
+| 0011 | Relleno de alineación del physmap |
+| **0013/0014** | **RNG sin depender de corecrypto** (`vm_kern.c`, 97 líneas)|
+| **0015** | **trust cache no disponible en tiempo de ejecución** |
+| **0016/0017/0018** | **platform expert por device tree, IRQ del timer virtual, driver de la CPU de arranque** |
+| **0019** | **pthread integrado** (¡no por prelink!)|
 | 0020 | portable AES-CBC |
 
-**我们已做到的**：0003/0010/0012 的等价物（fb + UART + kprintf，今晚打通）。
-**我们还缺的**：0013/0014（RNG）、0015（trust cache）、0016–0018（DT platform expert）、**0019（pthread 内置，我们错用了 prelink）**。
+**Lo que ya tenemos**: el equivalente de 0003/0010/0012 (fb + UART + kprintf, resuelto esta noche).
+**Lo que nos falta**: 0013/0014 (RNG), 0015 (trust cache), 0016–0018 (platform expert por DT), **0019 (pthread integrado; nosotros usamos mal el prelink)**.
 
-### 阶段 2｜根文件系统（0021–0037，17 个）
+### Etapa 2: Sistema de archivos raíz (0021–0037, 17 parches)
 
-| 补丁 | 作用 |
+| Parche | Función |
 |---|---|
-| **0021** | **mockfs + RAM disk 作根**（54 行）|
-| 0022/0024 | 无 IOMedia 的 ramdisk 根、mockfs 虚拟 ramdisk IO |
-| 0023/0026/0027/0032/0033 | 内置 sha256 / HFS / BearSSL（md5/sha1/sha384/sha512）|
-| **0025** | **自建 AMFI，不做 entitlements 检查**（`bsd/kern/nabu_amfi.c`，192 行）|
-| **0028/0030/0031/0034** | UFS 根设备、写支持、读写根、DMA above 4G |
-| **0029** | **unsealed root**（24 行，把 panic 改成 printf）|
-| 0035/0036 | AMFI entitlements、platform binaries 签名 |
+| **0021** | **mockfs + RAM disk como raíz** (54 líneas)|
+| 0022/0024 | raíz ramdisk sin IOMedia, E/S virtual de ramdisk en mockfs |
+| 0023/0026/0027/0032/0033 | sha256 / HFS / BearSSL integrados (md5/sha1/sha384/sha512)|
+| **0025** | **AMFI propio, sin comprobación de entitlements** (`bsd/kern/nabu_amfi.c`, 192 líneas)|
+| **0028/0030/0031/0034** | dispositivo raíz UFS, soporte de escritura, raíz de lectura/escritura, DMA por encima de 4G |
+| **0029** | **unsealed root** (24 líneas, cambia el panic por un printf)|
+| 0035/0036 | entitlements de AMFI, firma de binarios de plataforma |
 | 0037 | bindfs |
 
-**关键**：他们**先用 mockfs + RAM disk 起步**（0021），**UFS 是后来才加的**（0028）。
-我们关掉 NativeUfs 后正好需要 0021 这条路。
+**Clave**: ellos **empezaron con mockfs + RAM disk** (0021) y **UFS se añadió después** (0028).
+Como nosotros desactivamos NativeUfs, necesitamos justo el camino de 0021.
 
-### 阶段 3｜运行时稳定（0038–0045，8 个）
+### Etapa 3: Estabilidad en ejecución (0038–0045, 8 parches)
 
-AppleKeyStore、coredump 关闭、**iowatchdog（0040/0045）**、HFS link notes、
-exec 短日志、**console crash log（0043/0044）**。
+AppleKeyStore, coredump desactivado, **iowatchdog (0040/0045)**, notas de enlaces HFS,
+log corto de exec, **log de crash en consola (0043/0044)**.
 
-**iowatchdog 很关键**：没有它，系统起不来会被看门狗复位，看起来像"随机重启"。
+**iowatchdog es clave**: sin él, el sistema que no arranca es reiniciado por el watchdog, y parece un "reinicio aleatorio".
 
-### 阶段 4｜显示（0046–0049，4 个）
+### Etapa 4: Pantalla (0046–0049, 4 parches)
 
-| 补丁 | 作用 |
+| Parche | Función |
 |---|---|
-| **0046** | **自研 IOSurface + IOMobileFramebuffer**（`NabuSurface.cpp` / `NabuFramebuffer.cpp`）|
-| **0047** | **持久 console 日志**（4 MiB 环形，写在 userdata 末尾，TWRP 可读）|
-| 0048/0049 | devnull tee、IOKit trace |
+| **0046** | **IOSurface + IOMobileFramebuffer propios** (`NabuSurface.cpp` / `NabuFramebuffer.cpp`)|
+| **0047** | **log de consola persistente** (anillo de 4 MiB al final de userdata, legible con TWRP)|
+| 0048/0049 | devnull tee, traza de IOKit |
 
-**0046 就是我们卡住的那一段**，他们的答案是**不用 Apple 闭源 kext，自己写**。
+**0046 es justo el tramo en el que estamos atascados**; su respuesta fue **no usar el kext cerrado de Apple y escribirlo ellos**.
 
-### 阶段 5｜用户态外设（0050–0083，34 个）
+### Etapa 5: Periféricos de userland (0050–0083, 34 parches)
 
-sandbox 策略、crash 采样、HFS rename、process sampler、AKS、fb 节流、
-**HID event services（0058）**、iPhone identity（0059）、
-**触摸/按键驱动（0060/0062/0063/0071/0083）**、iPhone X 显示尺寸（0061）、
-**SMP PSCI（0065/0078）**、console mute、surface 查找缓存、UFS 加速、
-**USB（0072–0077/0081）**、display power、net trace、UFS AES。
+política de sandbox, muestreo de crashes, rename de HFS, process sampler, AKS, limitación del fb,
+**servicios de eventos HID (0058)**, identidad de iPhone (0059),
+**drivers de táctil/teclas (0060/0062/0063/0071/0083)**, tamaño de pantalla del iPhone X (0061),
+**SMP PSCI (0065/0078)**, console mute, caché de búsqueda de surfaces, aceleración de UFS,
+**USB (0072–0077/0081)**, energía de la pantalla, net trace, UFS AES.
 
 ---
 
-## 三、我们的实际差距（已按实际 patch 盘点修正）
+## III. Nuestra brecha real (corregida tras inventariar los parches reales)
 
-初版把差距估得过重。清点 `patches/xnu/` 后，情况是：
+La primera versión exageró la brecha. Tras contar `patches/xnu/`, la situación es:
 
-| 能力 | 我们已有的 patch | ios-nabu 对应 | 状态 |
+| Capacidad | Parche nuestro existente | Equivalente en ios-nabu | Estado |
 |---|---|---|---|
-| mockfs 编译修复 | `mockfs-typed-allocation` / `mockfs-statfs` / `mockfs-intermediate-lookup` / `mockfs-memory-device-width` / `mockfs-test-file` | 0021/0024 | ✅ **已做** |
-| 无 block storage 容忍 | `null-root-media` | 0021 | ✅ **已做** |
-| trust cache 运行时 | `native-trust-cache-runtime` | 0015 | ✅ **已做** |
-| **pthread** | `source-pthread-bootstrap`（新增 `bsd/kern/source_pthread_bootstrap.c`）| 0019 | ✅ **已有方案** |
-| SMP | `native-smp-secondary` | 0065/0078 | ✅ 已有 |
-| panic 区 | `native-dt-panic-region` | 0066 | ✅ 已有 |
-| work interval | `native-priv-work-interval` / `native-work-interval-soft-fail` | 0064 | ✅ 已有 |
-| 平台专家 / DT | `armvirt-platform-personality` / `source-machine-layer` / `sheng-platform-power` | 0016–0018 | 🟡 部分 |
-| **mockfs 编入内核** | `zzzz-nabu-mockfs-root`（本轮新增）| 0021 | 🟡 **本轮验证中** |
-| **RNG 不依赖 corecrypto** | — | 0013/0014 | ❌ 缺 |
-| **iowatchdog** | — | 0040/0045 | ❌ 缺 |
-| **AMFI 无 entitlements** | — | 0025 | ❌ 缺（或已由 `public-entitlements-header` 部分覆盖）|
-| **自研 surface / framebuffer** | — | 0046 | ❌ 缺，**仍是最大差距** |
-| 触摸 / USB / 显示电源 | — | 0058–0083 | ❌ 缺，远期 |
+| Arreglos de compilación de mockfs | `mockfs-typed-allocation` / `mockfs-statfs` / `mockfs-intermediate-lookup` / `mockfs-memory-device-width` / `mockfs-test-file` | 0021/0024 | ✅ **hecho** |
+| Tolerancia a la ausencia de block storage | `null-root-media` | 0021 | ✅ **hecho** |
+| trust cache en ejecución | `native-trust-cache-runtime` | 0015 | ✅ **hecho** |
+| **pthread** | `source-pthread-bootstrap` (añade `bsd/kern/source_pthread_bootstrap.c`)| 0019 | ✅ **ya hay solución** |
+| SMP | `native-smp-secondary` | 0065/0078 | ✅ ya está |
+| zona de panic | `native-dt-panic-region` | 0066 | ✅ ya está |
+| work interval | `native-priv-work-interval` / `native-work-interval-soft-fail` | 0064 | ✅ ya está |
+| platform expert / DT | `armvirt-platform-personality` / `source-machine-layer` / `sheng-platform-power` | 0016–0018 | 🟡 parcial |
+| **mockfs compilado en el kernel** | `zzzz-nabu-mockfs-root` (añadido en esta ronda)| 0021 | 🟡 **verificándose en esta ronda** |
+| **RNG sin depender de corecrypto** | — | 0013/0014 | ❌ falta |
+| **iowatchdog** | — | 0040/0045 | ❌ falta |
+| **AMFI sin entitlements** | — | 0025 | ❌ falta (o ya cubierto en parte por `public-entitlements-header`)|
+| **surface / framebuffer propios** | — | 0046 | ❌ falta, **sigue siendo la mayor brecha** |
+| táctil / USB / energía de pantalla | — | 0058–0083 | ❌ falta, a largo plazo |
 
-**结论：阶段 1 和阶段 2 的绝大部分我们已经有了**，真正的空白集中在
-**RNG（0013）、iowatchdog（0040）、AMFI（0025）和 surface/framebuffer（0046）**。
+**Conclusión: la gran mayoría de las etapas 1 y 2 ya la tenemos**; el vacío real está en
+**RNG (0013), iowatchdog (0040), AMFI (0025) y surface/framebuffer (0046)**.
 
 ---
 
-## 四、可行性方案
+## IV. Plan de viabilidad
 
-### 方案 A｜继续 10063，按 ios-nabu 的阶段走（推荐给"要自主"的目标）
+### Opción A: Seguir con 10063 siguiendo las etapas de ios-nabu (recomendada para el objetivo de "ser autónomo")
 
-**前提**：接受 10063 是 iOS 17 内核，用户态 ABI 风险自担。
+**Premisa**: aceptar que 10063 es un kernel de iOS 17 y que el riesgo de ABI del userland corre por nuestra cuenta.
 
-**第 1 步：补齐阶段 1 剩下的（1–2 天）**
+**Paso 1: completar lo que queda de la etapa 1 (1-2 días)**
 
-| 动作 | 对应参考 | 说明 |
+| Acción | Referencia | Explicación |
 |---|---|---|
-| **把 pthread 从 prelink 改回内置** | 0019 | 我们目前把 `com.apple.kec.pthread` 加进 prelink roots，方式不对 |
-| RNG 不依赖 corecrypto | 0013 | 改 `osfmk/vm/vm_kern.c` |
-| trust cache 运行时容忍 | 0015 | 没有 Image4 时不要 panic |
-| DT platform expert | 0016–0018 | 这是让 `arm-io` 子节点能匹配驱动的前提 |
+| **Pasar pthread de prelink a integrado** | 0019 | Ahora metemos `com.apple.kec.pthread` en los roots de prelink, y no es la forma correcta |
+| RNG sin depender de corecrypto | 0013 | Cambiar `osfmk/vm/vm_kern.c` |
+| tolerancia del trust cache en ejecución | 0015 | Sin Image4, no hacer panic |
+| platform expert por DT | 0016–0018 | Es el requisito para que los hijos de `arm-io` puedan emparejar drivers |
 
-**第 2 步：拿根文件系统（2–3 天）**
+**Paso 2: conseguir el sistema de archivos raíz (2-3 días)**
 
-| 动作 | 对应参考 | 我们的具体改法 |
+| Acción | Referencia | Nuestro cambio concreto |
 |---|---|---|
-| **`FILESYS_BASE` 加 `mockfs`** | 0021 | 我们的 `config/MASTER.arm64.bcm2837` 当前是 `[devfs fifo fs_compression config_protect config_mnt_rootsnap config_fse routefs namedstreams bindfs]`，**没有 mockfs** |
-| **容忍无 `IOBlockStorageDriver`** | 0021 | `iokit/Kernel/IOService.cpp:5261` 的 `assert(ioblockstoragedriverClass)` 要去掉（我们关了 NativeUfs，这个类不存在）|
-| **unsealed root** | 0029 | ✅ **已完成**（`zzzz-nabu-unsealed-root.patch`）|
-| RAM disk 作根 | 0021/0022 | `rd=md0` 之类，或用 mockfs 直接当根 |
+| **Añadir `mockfs` a `FILESYS_BASE`** | 0021 | Nuestro `config/MASTER.arm64.bcm2837` es ahora `[devfs fifo fs_compression config_protect config_mnt_rootsnap config_fse routefs namedstreams bindfs]`, **sin mockfs** |
+| **Tolerar la ausencia de `IOBlockStorageDriver`** | 0021 | Hay que quitar el `assert(ioblockstoragedriverClass)` de `iokit/Kernel/IOService.cpp:5261` (al desactivar NativeUfs, esa clase no existe)|
+| **unsealed root** | 0029 | ✅ **completado** (`zzzz-nabu-unsealed-root.patch`)|
+| RAM disk como raíz | 0021/0022 | algo como `rd=md0`, o usar mockfs directamente como raíz |
 
-**第 3 步：显示（1–4 周，这是真正的坎）**
+**Paso 3: pantalla (1-4 semanas, este es el verdadero obstáculo)**
 
-| 选项 | 工作量 | 结果 |
+| Opción | Esfuerzo | Resultado |
 |---|---|---|
-| **自研 `IOCoreSurfaceRoot` + `AppleCLCD`** | 2–4 周 | 能画图，为 SpringBoard 铺路 |
-| 放弃图形 | 0 | 内核能到 launchd，但看不见画面 |
+| **`IOCoreSurfaceRoot` + `AppleCLCD` propios** | 2-4 semanas | Se puede dibujar, abre camino a SpringBoard |
+| Renunciar a los gráficos | 0 | El kernel llega a launchd, pero no se ve la imagen |
 
-**第 4 步：运行时 + 外设**（阶段 3/5，数周）
+**Paso 4: runtime + periféricos** (etapas 3/5, varias semanas)
 
-### 方案 B｜切到 8796，基于 ios-nabu（推荐给"要看到画面"的目标）
+### Opción B: Pasar a 8796, basándose en ios-nabu (recomendada para el objetivo de "ver la imagen")
 
-| 项 | 说明 |
+| Elemento | Explicación |
 |---|---|
-| 收益 | **83 个补丁直接可用**、同设备、同 iPadOS 16.6.1、已到 SpringBoard |
-| 成本 | 重搭构建管线（但我们有 `build-kernel-8796.yml` 和 87 个 patch 的底子）|
-| 风险 | 需要理解并维护别人的 1.58 MB 补丁 |
-| 时间 | **1 周内能看到到他们的位置**，而不是几个月 |
+| Beneficio | **los 83 parches se pueden usar directamente**, mismo dispositivo, mismo iPadOS 16.6.1, ya llega a SpringBoard |
+| Coste | Rehacer la cadena de compilación (aunque tenemos la base de `build-kernel-8796.yml` y 87 parches)|
+| Riesgo | Hay que entender y mantener 1,58 MB de parches ajenos |
+| Tiempo | **en una semana se podría ver lo que ellos tienen**, en vez de varios meses |
 
-### 方案 C｜双线并行（最稳）
+### Opción C: Dos líneas en paralelo (la más segura)
 
-- **主线 10063**：继续验证我们自己的内核（QEMU 已到边界，真机到 IOSurface）
-- **副线 8796**：用 ios-nabu 的补丁快速拿到一个**能看见画面**的系统
-- 两条线共享：QEMU 环境、CI 管线、探针工具
-
----
-
-## 五、我的建议
-
-**先做方案 A 的第 1、2 步（3–5 天），因为这两步无论走哪条路都要做，而且成本可控：**
-
-1. **pthread 改内置**（现在是错的）
-2. **`FILESYS_BASE` 加 mockfs**
-3. **去掉 `assert(ioblockstoragedriverClass)`**
-4. **RAM disk 当根**
-
-做完这四件事，我们有很大概率把内核推进到 **`load_init_program`**（找 `/sbin/launchd`）。
-到那一步再决策 **方案 A 第 3 步（自研 surface，几周）vs 方案 B（切 8796，一周）**。
-
-**理由**：前四件事是**两条路的公共部分**，做了不浪费；而 IOSurface 那一段是**分岔点**，
-应该等拿到 `load_init_program` 的实际结果之后再决定。
+- **Línea principal 10063**: seguir validando nuestro propio kernel (QEMU ya llegó al límite, el teléfono llega a IOSurface)
+- **Línea secundaria 8796**: usar los parches de ios-nabu para conseguir rápido un sistema **con imagen visible**
+- Las dos líneas comparten: entorno QEMU, cadena de CI, herramientas de sondeo
 
 ---
 
-## 六、立即可执行清单（按性价比排序）
+## V. Mi recomendación
 
-| # | 动作 | 参考 | 预计 |
+**Primero los pasos 1 y 2 de la Opción A (3-5 días), porque hay que hacerlos vayamos por el camino que vayamos y su coste es controlable:**
+
+1. **pthread a integrado** (ahora está mal)
+2. **añadir mockfs a `FILESYS_BASE`**
+3. **quitar `assert(ioblockstoragedriverClass)`**
+4. **RAM disk como raíz**
+
+Hechas esas cuatro cosas, hay muchas probabilidades de que el kernel avance hasta **`load_init_program`** (buscar `/sbin/launchd`).
+Llegados ahí, se decide entre el **paso 3 de la Opción A (surface propio, varias semanas) y la Opción B (pasar a 8796, una semana)**.
+
+**Razón**: las cuatro primeras cosas son **la parte común de los dos caminos**, y hacerlas no es trabajo perdido; en cambio el tramo de IOSurface es **la bifurcación**,
+y conviene decidir después de ver el resultado real de `load_init_program`.
+
+---
+
+## VI. Lista ejecutable de inmediato (ordenada por relación coste-beneficio)
+
+| # | Acción | Referencia | Estimación |
 |---|---|---|---|
-| 1 | `config/MASTER.arm64.bcm2837` 的 `FILESYS_BASE` 加 `mockfs` | 0021 | 10 分钟 |
-| 2 | `IOService.cpp` 的 block storage assert 改成容忍 NULL | 0021 | 10 分钟 |
-| 3 | pthread 从 prelink roots 移除，改用内置实现 | 0019 | 半天 |
-| 4 | `vm_kern.c` 的 RNG 不依赖 corecrypto | 0013 | 半天 |
-| 5 | trust cache 运行时不可用不 panic | 0015 | 2 小时 |
-| 6 | RAM disk 作根，验证能到 `load_init_program` | 0021/0022 | 1 天 |
-| 7 | 决策：自研 surface 还是切 8796 | — | — |
+| 1 | Añadir `mockfs` a `FILESYS_BASE` de `config/MASTER.arm64.bcm2837` | 0021 | 10 minutos |
+| 2 | Hacer que el assert de block storage de `IOService.cpp` tolere NULL | 0021 | 10 minutos |
+| 3 | Quitar pthread de los roots de prelink y usar la implementación integrada | 0019 | medio día |
+| 4 | RNG de `vm_kern.c` sin depender de corecrypto | 0013 | medio día |
+| 5 | Que un trust cache no disponible en ejecución no haga panic | 0015 | 2 horas |
+| 6 | RAM disk como raíz, verificar que se llega a `load_init_program` | 0021/0022 | 1 día |
+| 7 | Decisión: surface propio o pasar a 8796 | — | — |
 
 ---
 
-## 七、诚实的判断
+## VII. Valoración honesta
 
-- **1–6 做完，内核大概率能到 launchd**，但**看不见画面**
-- **看见画面**需要 IOSurface 段，那一段**没法绕**
-- **ios-nabu 用 83 个补丁、几个月**做到，我们自己做同样的活**不会更快**
-- 唯一能显著加速的是**方案 B（切 8796 + 借补丁）**
+- **Con 1-6 hechos, el kernel probablemente llega a launchd**, pero **no se ve imagen**
+- **Ver imagen** exige el tramo de IOSurface, que **no se puede esquivar**
+- **ios-nabu lo logró con 83 parches y varios meses**; hacer nosotros el mismo trabajo **no será más rápido**
+- Lo único que acelera de forma notable es la **Opción B (pasar a 8796 + tomar prestados los parches)**
 
-**所以最终建议**：先做 1–6（公共部分，3–5 天），拿到 `load_init_program` 的实测结果，
-再决定 IOSurface 段是自己写还是切版本。
+**Recomendación final**: primero 1-6 (la parte común, 3-5 días), obtener el resultado real de `load_init_program`,
+y después decidir si el tramo de IOSurface lo escribimos nosotros o cambiamos de versión.

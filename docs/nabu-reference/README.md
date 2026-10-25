@@ -1,21 +1,21 @@
 # UniXNU on Xiaomi Pad 5 (nabu / SM8150)
 
-在 **小米平板 5（nabu，骁龙 860 / SM8150）** 上通过 UEFI 启动 **苹果 XNU 内核** 的完整移植记录。
+Registro completo del port que arranca el **kernel XNU de Apple** por UEFI en la **Xiaomi Pad 5 (nabu, Snapdragon 860 / SM8150)**.
 
-> **本机是扩容版**：物理 DRAM **12 GiB**（TWRP 实测 `MemTotal = 11766512 kB`，
-> 即 12 GiB 减去约 816 MB 给 modem/hyp/rmtfs），userdata **约 468 GiB**
-> （`fastboot partition-size:userdata = 0x74167BB000`）。
-> 所以 `dram_size = 0x300000000` 是**为这台机器测出来的**，不是标准 6/8 GB 机型的数字。
+> **Este equipo es la versión ampliada:** DRAM física de **12 GiB** (medido en TWRP: `MemTotal = 11766512 kB`,
+> es decir, 12 GiB menos unos 816 MB para modem/hyp/rmtfs) y userdata de **unos 468 GiB**
+> (`fastboot partition-size:userdata = 0x74167BB000`).
+> Por eso `dram_size = 0x300000000` está **medido para esta máquina**; no es el valor de un modelo estándar de 6/8 GB.
 
-> **状态**：**内核已经执行到 `execve("/sbin/launchd")`**
-> （`Process 1 exec of /sbin/launchd failed, errno 2`）。
-> 内核侧全部通过，现在缺的是一个装了系统文件的根文件系统。
+> **Estado**: **el kernel ya ejecuta hasta `execve("/sbin/launchd")`**
+> (`Process 1 exec of /sbin/launchd failed, errno 2`).
+> Todo lo del lado del kernel pasa; lo que falta es un sistema de archivos raíz con los archivos del sistema.
 
 ---
 
-## 一、里程碑：内核走到了 launchd
+## I. Hito: el kernel llegó a launchd
 
-**屏幕证据**
+**Evidencia en pantalla**
 
 ```
 Process 1 exec of /sbin/launchd failed, errno 2
@@ -27,39 +27,39 @@ PC=18446744005117767160
 LR=18446744005111703156
 ```
 
-**完整链路**
+**Cadena completa**
 
 ```
 bsd_autoconf()                            OK
   kminit()                                OK
-    IOsurfaceRoot::installMemoryRegions() OK   <- 曾被误认为卡在这里
-bsd_init 后半段                           OK
+    IOsurfaceRoot::installMemoryRegions() OK   <- se había creído que se atascaba aquí
+bsd_init, segunda mitad                   OK
   vfs_mountroot()                         OK
-  load_init_program()                     OK   <- 解析出 /sbin/launchd
+  load_init_program()                     OK   <- resuelve /sbin/launchd
     execve("/sbin/launchd")               errno 2 (ENOENT)
 ```
 
-**`errno 2` 是文件不存在，不是内核故障。**
+**`errno 2` significa que el archivo no existe; no es un fallo del kernel.**
 
-### 曾经误判了三天
+### Nos equivocamos durante tres días
 
-`IOsurfaceRoot::installMemoryRegions()` 那一行**从来不是终点，只是最后一条 kprintf**。
-它之后的 `dtrace_postinit()`、`inittodr()`、条件编译的网络初始化**全都不打日志**，
-于是「日志停止」被读成了「内核停止」。
+La línea de `IOsurfaceRoot::installMemoryRegions()` **nunca fue el final, solo el último kprintf**.
+Tras ella, `dtrace_postinit()`, `inittodr()` y la inicialización de red (compilación condicional) **no imprimen ningún log**,
+así que "el log se paró" se leyó como "el kernel se paró".
 
-真正缺的一直是一个根文件系统。
+Lo que faltaba siempre era un sistema de archivos raíz.
 
 ---
 
-## 二、启动链（真机验证）
+## II. Cadena de arranque (verificada en el teléfono)
 
 ```
-fastboot boot -> Mu UEFI -> UniXNU 菜单 -> cust 分区 payload
--> DarwinBoot -> 读 51MB 内核 -> 解析 Mach-O -> ADT 校验
--> 分配窗口 -> 映射段 -> ExitBootServices -> 跳转 XNU -> 内核执行
+fastboot boot -> Mu UEFI -> menú de UniXNU -> payload de la partición cust
+-> DarwinBoot -> lee el kernel de 51 MB -> analiza el Mach-O -> comprueba el ADT
+-> asigna la ventana -> mapea segmentos -> ExitBootServices -> salta a XNU -> el kernel se ejecuta
 ```
 
-关键日志：
+Logs clave:
 
 ```
 UNIXNU: runxnu entry vol=A2142798 path=\EFI\UniXNU\Payloads\kernel.macho cfgerr=[]
@@ -77,62 +77,62 @@ DARWINBOOT: hand-off to the kernel
 
 ---
 
-## 三、本地 Linux 构建（72 秒一轮）
+## III. Compilación local en Linux (72 segundos por ronda)
 
-内核现在能在本地 WSL Ubuntu 24.04 上编译，**72 秒**一轮，对照 GitHub macOS runner 的 15–17 分钟。
+El kernel ya se puede compilar en un WSL Ubuntu 24.04 local en **72 segundos** por ronda, frente a los 15-17 minutos del runner macOS de GitHub.
 
-| 项 | GitHub macOS runner | 本地 WSL Ubuntu |
+| Elemento | Runner macOS de GitHub | WSL Ubuntu local |
 |---|---|---|
-| 单轮构建 | 15–17 分钟 | **72 秒** |
-| 产物 | 49.2 MB | **49 MB** |
-| 可复现 | 只能靠 CI | 本机随时跑 |
+| Compilación por ronda | 15-17 minutos | **72 segundos** |
+| Producto | 49,2 MB | **49 MB** |
+| Reproducible | Solo con CI | Se puede ejecutar en la máquina cuando quieras |
 
-**产物验证**
+**Verificación del producto**
 
 ```
 file            Mach-O 64-bit arm64 executable, flags:<NOUNDEFS|PIE>
-__TEXT vmaddr   0xfffffff007004000      与原版 kernelcache 一致
+__TEXT vmaddr   0xfffffff007004000      igual que el kernelcache original
 symbols         22708
-nabu 探针       nabu_mark / nabu_mark_map / nabu_mark_num / nabu_mark_putc
-UFS 探测        nabu_ufs_register_probe.cpp
+Sondas nabu     nabu_mark / nabu_mark_map / nabu_mark_num / nabu_mark_putc
+Sondeo de UFS   nabu_ufs_register_probe.cpp
 sha256          c756ecdb88a9dd50156dc27d2cdf48a08ddf93fcf204040fa57804f814fc3c15
 ```
 
-工具链来自 [`Allenwdk/xnu-linux-toolchain`](https://github.com/Allenwdk/xnu-linux-toolchain)。
+La cadena de herramientas viene de [`Allenwdk/xnu-linux-toolchain`](https://github.com/Allenwdk/xnu-linux-toolchain).
 
-### 打通 Linux 时踩的 18 个坑
+### 18 trampas al hacerlo funcionar en Linux
 
-| 类别 | 数量 | 例子 |
+| Categoría | Cantidad | Ejemplos |
 |---|---|---|
-| 工具链缺失 | 8 | `libdispatch` 无 Ubuntu 包；`hostcompat.h` / `libc.h` / `copyfile.h` / `setmode` 全需自写 |
-| 路径硬编码 | 5 | `/usr/bin/xcrun`、`/usr/sbin/sysctl`、`compression_tool`、`dsymutil`、`lzfse` |
-| BSD vs GNU | 3 | `sed -i ''`、`awk \(`、未知 `-Wno-*` |
-| 逻辑冲突 | 2 | mockfs 双重链接（23 个重复符号）、`TargetConditionals.h` 重复 |
+| Herramientas ausentes | 8 | `libdispatch` no tiene paquete en Ubuntu; `hostcompat.h` / `libc.h` / `copyfile.h` / `setmode` hubo que escribirlos todos |
+| Rutas escritas a mano | 5 | `/usr/bin/xcrun`, `/usr/sbin/sysctl`, `compression_tool`, `dsymutil`, `lzfse` |
+| BSD vs GNU | 3 | `sed -i ''`, `awk \(`, `-Wno-*` desconocidos |
+| Conflictos de lógica | 2 | doble enlazado de mockfs (23 símbolos duplicados), `TargetConditionals.h` duplicado |
 
-**最有价值的一个**：`makesyscalls.sh` 里 `printf("\t{ \(sy_call_t *\)...")` ——
-**BSD awk 把 `\(` 当转义，gawk 保留反斜杠**，Linux 上生成的 `init_sysent.c` 全是
-`\(sy_call_t *\)`，编译器报一片 `expected expression`。做成 patch（`zzzz-nabu-awk-parens.patch`），
-因为 `unixnu tree` 每次都重建 `.cache`，手工改会被覆盖。
+**El más valioso**: en `makesyscalls.sh`, `printf("\t{ \(sy_call_t *\)...")` ——
+**el awk de BSD trata `\(` como escape, gawk conserva la barra invertida**: en Linux el `init_sysent.c` generado es todo
+`\(sy_call_t *\)`, y el compilador da un montón de `expected expression`. Se hizo un parche (`zzzz-nabu-awk-parens.patch`),
+porque `unixnu tree` reconstruye `.cache` cada vez y un cambio manual se sobrescribiría.
 
 ---
 
-## 四、根文件系统：7-Zip 直接解，不用 hdiutil
+## IV. Sistema de archivos raíz: 7-Zip lo extrae directamente, sin hdiutil
 
-`build userdata` 在 Linux 上卡在 `hdiutil`。不用自己写 UDIF 解析器 ——
-**7-Zip 23.01 原生支持 DMG + LZFSE**，直接解出完整 iOS 文件系统：
+`build userdata` se atasca en Linux con `hdiutil`. No hace falta escribir un analizador UDIF propio ——
+**7-Zip 23.01 soporta de forma nativa DMG + LZFSE** y extrae directamente el sistema de archivos completo de iOS:
 
 ```bash
 sudo apt-get install -y p7zip-full
 7z x -y -o/tmp/dmgout 044-76040-038.dmg
 ```
 
-实测结果：
+Resultado medido:
 
 ```
 /sbin/launchd   561,856 bytes   Mach-O 64-bit arm64 executable
                                flags:<NOUNDEFS|DYLDLINK|TWOLEVEL|PIE>
 
-9.7 GB / 210,828 个文件
+9.7 GB / 210,828 archivos
   8.1G  System
   713M  usr
   483M  private
@@ -141,10 +141,10 @@ sudo apt-get install -y p7zip-full
   960K  sbin
 ```
 
-**注意**：`dmg2img 1.6.7` **不支持 LZFSE**，会报
-`Unsupported or corrupted block found: -2147483641` 并输出残像。用 7-Zip。
+**Ojo**: `dmg2img 1.6.7` **no soporta LZFSE**, da
+`Unsupported or corrupted block found: -2147483641` y produce una imagen basura. Usa 7-Zip.
 
-`7z l -slt` 能直接看出压缩方式：
+`7z l -slt` muestra directamente el método de compresión:
 
 ```
 Method = Copy Zero2 LZFSE CRC
@@ -157,69 +157,69 @@ num_files: 165509
 
 ---
 
-## 五、六道硬坑与解法（照这个顺序踩，能省几天）
+## V. Seis trampas duras y sus soluciones (pisándolas en este orden se ahorran días)
 
-### 坑 1：`fastboot boot` 报 `Failed to load/authenticate boot image: Load Error`
+### Trampa 1: `fastboot boot` da `Failed to load/authenticate boot image: Load Error`
 
-**不是** 官改 ABL 禁用 boot，**是 USB 线**。
+**No es** que el ABL modificado desactive boot, **es el cable USB**.
 
-- 劣质充电线会让 96MB 级镜像传输丢数据 -> ABL 校验失败
-- 换原装数据线 + 插主板后面板 USB 口后，同一镜像立刻 `Booting OKAY`
+- Un cable de carga malo pierde datos al transferir imágenes de ~96 MB -> el ABL falla al verificar
+- Con el cable de datos original y el puerto USB trasero de la placa base, la misma imagen da `Booting OKAY` de inmediato
 
-### 坑 2：ramdisk 大小有上下限
+### Trampa 2: el tamaño del ramdisk tiene límites inferior y superior
 
 | ramdisk | ABL | UEFI |
 |---|---|---|
 | 16 MB | Load Error | — |
-| 32 MB | OK | 菜单正常 |
-| 64 MB | OK | 菜单正常 |
-| 96 MB | OK | 黑屏 |
+| 32 MB | OK | menú normal |
+| 64 MB | OK | menú normal |
+| 96 MB | OK | pantalla negra |
 
-可用区间 **32–64MB**；`header_version = 1`，`page_size 2048`。
+Rango utilizable **32-64 MB**; `header_version = 1`, `page_size 2048`.
 
-### 坑 3：`fastboot boot` 前先重启设备
+### Trampa 3: reinicia el dispositivo antes de `fastboot boot`
 
-设备每次重启后**第一次 boot 成功率最高**；连续 boot 会出现 Load Error（download buffer 状态残留）。
+**El primer boot tras cada reinicio es el que más veces funciona**; boots seguidos dan Load Error (queda estado residual en el download buffer).
 
-### 坑 4：把内核塞进固件卷走不通（PEI 解压预算）
+### Trampa 4: meter el kernel en el volumen de firmware no funciona (presupuesto de descompresión de PEI)
 
-| FVMAIN 大小 | 结果 |
+| Tamaño de FVMAIN | Resultado |
 |---|---|
-| 8 MB（原始） | 固件正常 |
-| 62 MB（未压缩内核） | 回 fastboot |
-| 15 MB（LZMA 压缩内核） | 回 fastboot |
+| 8 MB (original) | el firmware funciona |
+| 62 MB (kernel sin comprimir) | vuelve a fastboot |
+| 15 MB (kernel comprimido con LZMA) | vuelve a fastboot |
 
-FVMAIN 上限约 8–10MB；FD 本身也有上限。**内核不能走 boot.img 内核段，只能走存储。**
+El límite de FVMAIN es de unos 8-10 MB; el propio FD también tiene límite. **El kernel no puede ir en el segmento de kernel del boot.img, solo por almacenamiento.**
 
-### 坑 5：没有任何 FAT 盘（最根本的一个）
+### Trampa 5: no hay ningún disco FAT (la más fundamental)
 
-固件其实自带完整存储栈（`UFSDxe` / `PartitionDxe` / `DiskIoDxe` / `Fat`），
-但安卓分区全是 ext4/f2fs，UniXNU 枚举不到任何带 `unixnu.toml` 的卷。
+En realidad el firmware trae una pila de almacenamiento completa (`UFSDxe` / `PartitionDxe` / `DiskIoDxe` / `Fat`),
+pero las particiones de Android son todas ext4/f2fs, así que UniXNU no encuentra ningún volumen con `unixnu.toml`.
 
-### 坑 6：ADT 里的 DRAM 必须是实测值
+### Trampa 6: la DRAM del ADT tiene que ser el valor medido
 
 ```
-dram-size               = 0x300000000   12 GiB（本机扩容）
-darwinboot-memory-size  = 0x20000000    512 MiB 连续窗口
+dram-size               = 0x300000000   12 GiB (ampliada en este equipo)
+darwinboot-memory-size  = 0x20000000    ventana contigua de 512 MiB
 ```
 
-`darwinboot-memory-size` 是 DarwinBoot 向固件要的一块**连续**物理内存。
-512 MiB 足够；更大的值更难从 `EfiConventionalMemory` 里找到连续区间。
+`darwinboot-memory-size` es un bloque **contiguo** de memoria física que DarwinBoot pide al firmware.
+512 MiB bastan; un valor mayor es más difícil de encontrar como intervalo contiguo en `EfiConventionalMemory`.
 
 ---
 
-## 六、下一步
+## VI. Siguiente paso
 
-**唯一缺的是把解出来的根做成一个能挂的卷。**
+**Lo único que falta es convertir la raíz extraída en un volumen montable.**
 
 ```bash
-./unixnu ipsw fetch OS Cryptex1,SystemOS      # 已下好：OS 4.80 GiB + SystemOS 3.08 GiB
+./unixnu ipsw fetch OS Cryptex1,SystemOS      # ya descargado: OS 4,80 GiB + SystemOS 3,08 GiB
 7z x -y -o/tmp/dmgout out/ipsw/21H461/044-76040-038.dmg
-./unixnu build userdata                       # SHNGROOT manifest + 两个窗口
+./unixnu build userdata                       # manifiesto SHNGROOT + dos ventanas
 fastboot flash userdata out/nabu/userdata/userdata-root.img
 ```
 
-`[userdata]` 几何（TWRP 实测）：
+Geometría de `[userdata]` (medida en TWRP):
 
 ```
 first_lba = 0x288C40     2,654,272    (4 KiB LBA)
@@ -228,12 +228,12 @@ lba_bytes = 4096
 windows   = [OS, SystemOS]
 ```
 
-**不再是编译问题，不再是驱动问题，是数据问题。**
+**Ya no es un problema de compilación ni de drivers: es un problema de datos.**
 
 ---
 
-## 七、参考
+## VII. Referencias
 
-- [`Allenwdk/xnu-linux-toolchain`](https://github.com/Allenwdk/xnu-linux-toolchain) —— Linux 交叉工具链
-- [`1PJL/unixnu-nabu`](https://github.com/1PJL/unixnu-nabu) —— UFS 卷诊断系列（`Recover GPT` / `Build Volume` / `Repack` 三步，跑在 `ubuntu-24.04` 上）
-- `UniXNU` 上游 —— 内核移植与 UEFI 启动链
+- [`Allenwdk/xnu-linux-toolchain`](https://github.com/Allenwdk/xnu-linux-toolchain) —— cadena de herramientas cruzada para Linux
+- [`1PJL/unixnu-nabu`](https://github.com/1PJL/unixnu-nabu) —— serie de diagnóstico de volúmenes UFS (tres pasos `Recover GPT` / `Build Volume` / `Repack`, sobre `ubuntu-24.04`)
+- `UniXNU` upstream —— port del kernel y cadena de arranque UEFI

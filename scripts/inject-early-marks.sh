@@ -1,6 +1,6 @@
 #!/bin/bash
-# 把早期检查点标记注入 XNU 源码树（仅用于诊断构建）
-# 用法: bash inject-early-marks.sh <xnu-source-root>
+# Inyecta las marcas de punto de control tempranas en el árbol de código fuente de XNU (solo para compilaciones de diagnóstico)
+# Uso: bash inject-early-marks.sh <xnu-source-root>
 set -e
 X="${1:?xnu source root}"
 

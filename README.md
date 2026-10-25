@@ -87,7 +87,7 @@ Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 | `docs/ios-sweet-legacy/` | Tu bitácora completa del port anterior |
 | `legacy/` | Tu shim, tus herramientas y tus parches propios anteriores |
 
-`docs/nabu-reference/` son notas históricas de la Pad 5 y siguen en su idioma original (chino/inglés).
+`docs/nabu-reference/` son notas históricas de la Pad 5, también traducidas (el texto que ya estaba en inglés y los comandos se dejaron tal cual).
 
 ## Trampas conocidas de SM8150 (de UniXNU/nabu)
 
