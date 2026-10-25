@@ -40,9 +40,9 @@ Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 - [x] Los `.gitignore` excluyen imágenes, firmware y copias de seguridad
 
 ### Fase 0: Preparación del teléfono
-- [ ] Copia de seguridad de `boot`, `dtbo`, `vbmeta`, `persist`, `modemst1`, `modemst2`, `fsg` y `fsc`
-- [ ] Bootloader desbloqueado con Mi Unlock (revisar el estado de la cuenta)
-- [ ] Probar `fastboot boot` con un boot.img de Android sin modificar
+- [x] Copia de seguridad de `boot`, `dtbo`, `vbmeta`, `persist`, `modemst1`, `modemst2`, `fsg` y `fsc`
+- [x] Bootloader desbloqueado con Mi Unlock (revisar el estado de la cuenta)
+- [x] Probar `fastboot boot` con un boot.img de Android sin modificar
 
 ### Fase 1: Arranque y consola en pantalla
 - [ ] Medir en tu Mi 9: DRAM, `userdata` (first/last LBA) y dirección del framebuffer (`TODO-MEASURE.md`)
