@@ -1,0 +1,15 @@
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c	2026-10-19 20:38:13.863098824 +0000
+@@ -231,10 +231,8 @@
+ static inline void
+ kernel_bootstrap_thread_log(const char *message)
+ {
+-	if ((startup_debug & STARTUP_DEBUG_VERBOSE) &&
+-	    startup_phase >= STARTUP_SUB_KPRINTF) {
+-		kprintf("kernel_bootstrap_thread: %s\n", message);
+-	}
++	/* CEPHEUS debug: siempre en pantalla (printf), solo tras los locks */
++	printf("kernel_bootstrap_thread: %s\n", message);
+ 	kernel_debug_string_early(message);
+ }
+ 

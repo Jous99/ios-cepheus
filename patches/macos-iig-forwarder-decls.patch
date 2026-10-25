@@ -1,0 +1,54 @@
+diff --git a/iokit/IOKit/IOService.h b/iokit/IOKit/IOService.h
+--- a/iokit/IOKit/IOService.h
++++ b/iokit/IOKit/IOService.h
+@@ -401,6 +401,13 @@ struct OSObjectUserVars;
+ struct IOServiceStateChangeVars;
+ struct IOInterruptSourcePrivate;
+ 
++#if PRIVATE_WIFI_ONLY
++/* OSObject.iig:127 -- OSContainer is a typedef of OSObject; identical
++ * typedef redeclaration is legal in C++, so this is safe whether or
++ * not the iig-generated header was included first. */
++typedef OSObject OSContainer;
++#endif /* PRIVATE_WIFI_ONLY */
++
+ class IOService : public IORegistryEntry
+ {
+ 	OSDeclareDefaultStructorsWithDispatch(IOService);
+
+diff --git a/iokit/Kernel/IOUserServer.cpp b/iokit/Kernel/IOUserServer.cpp
+--- a/iokit/Kernel/IOUserServer.cpp
++++ b/iokit/Kernel/IOUserServer.cpp
+@@ -655,32 +655,8 @@ IOService::SendIOMessageServicePropertyChange_Impl(void)
+ {
+ 	return messageClients(kIOMessageServicePropertyChange);
+ }
+-
+-/*
+- * Apple's iig emits the DriverKit-facing forwarders and the TYPE(...) OSAction
+- * factories into the generated .iig.cpp, which the kernel build does not
+- * compile. The Linux iig shim generates the declarations but not these
+- * definitions, so spell out the ones the kernel actually calls.
+- */
+-kern_return_t
+-IOService::UserSetProperties(OSContainer * properties)
+-{
+-	return UserSetProperties_Impl(properties);
+-}
+-
+-kern_return_t
+-IOService::SendIOMessageServicePropertyChange(void)
+-{
+-	return SendIOMessageServicePropertyChange_Impl();
+-}
+ #endif /* PRIVATE_WIFI_ONLY */
+ 
+-kern_return_t
+-IOUserClient::CreateActionKernelCompletion(size_t referenceSize, OSAction ** action)
+-{
+-	return OSAction::Create(this, 0, 0, referenceSize, action);
+-}
+-
+ /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+ 
+ kern_return_t

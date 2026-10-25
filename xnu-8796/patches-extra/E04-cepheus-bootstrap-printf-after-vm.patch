@@ -1,0 +1,17 @@
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c	2026-10-19 21:07:56.796129265 +0000
+@@ -225,10 +225,10 @@
+ static inline void
+ kernel_bootstrap_log(const char *message)
+ {
+-#if defined(__arm64__)
+-	/* CEPHEUS debug: marca en framebuffer, sin locks */
+-	cepheus_early_mark(8, message);
+-#endif
++	/* CEPHEUS debug: printf solo tras vm_mem_bootstrap (locks y consola listos) */
++	if (startup_phase >= STARTUP_SUB_ZALLOC) {
++		printf("CEPHEUS kernel_bootstrap: %s\n", message);
++	}
+ 	if ((startup_debug & STARTUP_DEBUG_VERBOSE) &&
+ 	    startup_phase >= STARTUP_SUB_KPRINTF) {
+ 		kprintf("kernel_bootstrap: %s\n", message);

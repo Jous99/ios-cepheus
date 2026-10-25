@@ -1,0 +1,19 @@
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -258,10 +258,16 @@
+ static void
+ procinit(void)
+ {
++	/* CEPHEUS debug: pasos de procinit, para ver donde se queda */
++	printf("CEPHEUS procinit: 1 smr pid\n");
+ 	smr_hash_init(&pid_hash, maxproc / 4);
++	printf("CEPHEUS procinit: 2 smr pgrp\n");
+ 	smr_hash_init(&pgrp_hash, maxproc / 4);
++	printf("CEPHEUS procinit: 3 hash sess\n");
+ 	sesshashtbl = hashinit(maxproc / 4, M_PROC, &sesshash);
++	printf("CEPHEUS procinit: 4 hash ui\n");
+ 	uihashtbl = hashinit(maxproc / 16, M_PROC, &uihash);
++	printf("CEPHEUS procinit: 5 done\n");
+ }
+ STARTUP(EARLY_BOOT, STARTUP_RANK_FIRST, procinit);
+ 

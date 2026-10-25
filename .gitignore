@@ -22,3 +22,8 @@ logs/
 /Claude outputs
 /xnu-src
 /xnu/out_old
+
+# migración (UniXNU)
+build/
+out/
+dxb/
