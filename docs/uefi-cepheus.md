@@ -5,6 +5,14 @@
 > Mu-Silicium (2026-10-25) y `unixnu status` lee este `board.toml`. )
 > Modelo seguido: UniXNU-sheng + uefi-sheng, y las notas de nabu en `docs/firmware-patches.md`.
 
+## Notas de la primera ejecución (2026-10-25)
+- El firmware (`build firmware`) compiló bien en WSL.
+- `unixnu bootimg` falló con *the ARM64 image header does not describe the shim plus the firmware volume*: el `BootShim.S` de Mu-Silicium
+  declara en la cabecera solo `FD_SIZE`, y UniXNU espera `FD_SIZE + tamaño del shim`. Reproducido compilando el shim: `0x300000` frente a `0x300070`.
+  Con el `BootShim.S` de uefi-sheng (`uefi/BootShim-unixnu.patch`) la comprobación pasa (`0x3000c0`). Ese shim además limpia la caché antes de saltar al firmware copiado.
+  El shim se compila dentro de `bootimg`, así que **no hace falta recompilar el firmware**.
+- `bootimg` también necesita `--uefi` y `--dtb ~/Mu-Silicium/Resources/DTBs/cepheus.dtb`.
+
 ## Qué hay y qué falta
 - Mu-Silicium **ya trae `cepheusPkg`** (Xiaomi Mi 9). Su estado declarado es *Inactive*; en UEFI figuran pantalla,
   almacenamiento y botones como funcionando, y USB host no.
@@ -24,6 +32,7 @@ mkdir -p ~/ios-cepheus/out
 
 cd ~/Mu-Silicium && ./setup_env.sh -p apt && python3 -m pip install -r pip-requirements.txt
 git apply ~/ios-cepheus/uefi/cepheusPkg-unixnu.patch        # añade UniXNU/DarwinBoot a cepheusPkg
+git apply ~/ios-cepheus/uefi/BootShim-unixnu.patch          # shim de uefi-sheng: cabecera ARM64 con el tamaño total (shim+FD) y limpieza de caché
 
 cd ~/UniXNU
 ./unixnu build firmware --uefi ~/Mu-Silicium -D ~/ios-cepheus     # firmware UEFI (.fd)
