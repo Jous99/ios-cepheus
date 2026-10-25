@@ -1,7 +1,8 @@
 # Receta: imagen UEFI + DarwinBoot para el Mi 9 (cepheus)
 
-> **Estado: receta sin ejecutar.** Lo verificado: el parche `uefi/cepheusPkg-unixnu.patch` aplica limpio sobre
-> Mu-Silicium (2026-10-25) y `unixnu status` lee este `board.toml`. **No** se ha compilado el firmware ni arrancado en el teléfono.
+> **Estado: el firmware compiló en WSL (2026-10-25); la imagen de arranque y el arranque en el teléfono siguen sin probar.**
+> (Nota anterior: Lo verificado: el parche `uefi/cepheusPkg-unixnu.patch` aplica limpio sobre
+> Mu-Silicium (2026-10-25) y `unixnu status` lee este `board.toml`. )
 > Modelo seguido: UniXNU-sheng + uefi-sheng, y las notas de nabu en `docs/firmware-patches.md`.
 
 ## Qué hay y qué falta
@@ -26,7 +27,8 @@ git apply ~/ios-cepheus/uefi/cepheusPkg-unixnu.patch        # añade UniXNU/Darw
 
 cd ~/UniXNU
 ./unixnu build firmware --uefi ~/Mu-Silicium -D ~/ios-cepheus     # firmware UEFI (.fd)
-./unixnu bootimg -D ~/ios-cepheus                                 # imagen de arranque Android (BootShim + FD + dtb)
+./unixnu bootimg --uefi ~/Mu-Silicium -D ~/ios-cepheus             # imagen de arranque Android (BootShim + FD + dtb)
+# si pide el árbol de dispositivo: añade  --dtb ~/Mu-Silicium/Resources/DTBs/cepheus.dtb
 ```
 Si `build firmware` falla, pega el primer `error` y la línea anterior.
 
