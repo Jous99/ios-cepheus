@@ -6,6 +6,11 @@ on:
   push:
     branches: ['**']
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'Rama destino en Forgejo (vacío = la misma rama)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -20,6 +25,9 @@ jobs:
       - name: Push a Forgejo
         env:
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          INPUT_TARGET: ${{ inputs.target }}
         run: |
+          TARGET="${INPUT_TARGET:-$GITHUB_REF_NAME}"
+          [[ "$TARGET" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "rama destino no valida"; exit 1; }
           git push "https://Jous:${FORGEJO_TOKEN}@git.joustech.space/Jous/ios-cepheus.git" \
-            "HEAD:refs/heads/${GITHUB_REF_NAME}"
+            "HEAD:refs/heads/${TARGET}"
