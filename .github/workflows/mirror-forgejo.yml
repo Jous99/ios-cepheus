@@ -1,0 +1,25 @@
+name: mirror-forgejo
+
+# Copia la rama que se empuja a Forgejo. No fuerza el push (sin --force):
+# si la historia diverge, falla en vez de pisar nada.
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Push a Forgejo
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          git push "https://Jous:${FORGEJO_TOKEN}@git.joustech.space/Jous/ios-cepheus.git" \
+            "HEAD:refs/heads/${GITHUB_REF_NAME}"
