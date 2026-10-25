@@ -23,11 +23,16 @@ Sobre `xnu-8796.141.3` limpio (macOS 13.5): la serie 0001-0082 + 0084 aplica sin
 **Límites:** no se ha compilado (el CI es macOS) y los scripts `stage-*` no pudieron ejecutarse del todo aquí
 (sin `xcrun`, y bearssl.org no es accesible), así que los parches que dependen de esos archivos preparados no se comprobaron.
 
+## Documentación
+Se tradujeron al español `STATUS.md`, `TODO-MEASURE.md` y los documentos de `docs/` (los originales en chino están en `docs/original-zh/`).
+`docs/nabu-reference/` (notas históricas de la Pad 5) no se tradujo.
+
 ## Qué NO se hizo (decisiones tuyas)
 1. **IPSW:** `board.toml` apunta al iPad 17.7.11 (xnu-10063); tu proyecto usaba el iPhone X 16.7.16 con xnu-8796.
    El workflow `build-kernel-8796.yml` no usa esa sección, pero el empaquetado del root sí. Hay que decidir cuál.
 2. **Tu root actual:** `userdata` contiene tu root de iOS 16. Esta cadena lo sobrescribiría con el del IPSW elegido.
-3. **Ramdisk/logs:** tus pruebas de RAM para logs (0x9d000000, 0x1f0000000) no sobrevivían al reinicio; sigue valiendo la pantalla.
+3. **`maxmem` en el ADT:** `make-cepheus-adt.py` no lo fija y `board.toml` trae `owned_memory_size = 0x20000000`; revísalo al medir la DRAM (ver `TODO-MEASURE.md`).
+4. **Ramdisk/logs:** tus pruebas de RAM para logs (0x9d000000, 0x1f0000000) no sobrevivían al reinicio; sigue valiendo la pantalla.
 
 ## Medir en tu Mi 9 (obligatorio antes de flashear)
 Desde TWRP (`adb shell`):

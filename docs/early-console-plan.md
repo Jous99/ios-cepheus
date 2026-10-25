@@ -1,178 +1,184 @@
-# 内核早期 console 走帧缓冲（不拆机拿到 panic）
+# Consola temprana del kernel por framebuffer (sacar el panic sin desmontar el móvil)
 
-## 问题
+> Documento de la Xiaomi Pad 5 (nabu), traducido al español para referencia. El original en chino está en `docs/original-zh/`.
 
-内核已进入执行（`DARWINBOOT: hand-off to the kernel` / `still-there kernel entry code ran`），
-但**屏幕上没有任何 panic 文字**，控制权随后回到 UniXNU（菜单被重绘）。
+## El problema
 
-原因：XNU 早期 `kprintf` 默认输出到**串口**；不接 UART 就是黑箱。
-而 UART 需要拆机飞线，`fastboot`/ADB 在此时都不存在。
+El kernel ya entra en ejecución (`DARWINBOOT: hand-off to the kernel` / `still-there kernel entry code ran`),
+pero **no aparece ningún texto de panic en pantalla**, y el control vuelve a UniXNU (se redibuja el menú).
 
-## 已有的有利条件
+Causa: el `kprintf` temprano de XNU saca por defecto por el **puerto serie**; sin UART es una caja negra.
+Y el UART exige desmontar y soldar cables, y en este punto no existen ni `fastboot` ni ADB.
 
-DarwinBoot 已经把显存信息交给内核（boot args `Video[6]`）：
+## Condiciones favorables que ya existen
+
+DarwinBoot ya entrega al kernel la información de la memoria de vídeo (`Video[6]` de los boot args):
 
 ```
 video base=0x50000000   1600x2560   row 6400 bytes   32 bpp
 ```
 
-即 `PE_state.video` 里已有 `v_baseAddr / v_rowBytes / v_width / v_height / v_depth`。
-帧缓冲是普通内存映射，EL1 下可写 —— **完全不需要额外硬件**。
+Es decir, `PE_state.video` ya tiene `v_baseAddr / v_rowBytes / v_width / v_height / v_depth`.
+El framebuffer es memoria normal mapeada, escribible desde EL1: **no hace falta hardware adicional**.
 
-## 方案：自带一个极小帧缓冲 console
+## Plan: llevar una consola de framebuffer mínima
 
-不依赖苹果的 `video_console`（该子系统主要为 x86 启动屏/白屏服务，ARM 侧未启用），
-自己写一个自包含的 putc 后端，风险最低。
+No depende de `video_console` de Apple (ese subsistema sirve sobre todo a la pantalla de arranque en x86 y no está
+activo en ARM). Escribir un backend `putc` autocontenido es lo de menor riesgo.
 
 ```
 scripts/nabu-early-fb-console/
-├── nabu_fb_console.c    ~150 行
-│     - 8x16 点阵字库（ASCII 32..126，可先只做 0x20..0x7E 子集）
-│     - nabu_fb_putc(c)：处理 \n / \r / 滚屏
-│     - 像素写入：base + rowBytes*y + 4*x ，32bpp 直接写 0x00FFFFFF
-│     - 全部基于 PE_state.video，不做任何 MMIO / 寄存器操作
-└── inject.py            构建期注入
+├── nabu_fb_console.c    ~150 líneas
+│     - fuente de puntos 8x16 (ASCII 32..126; se puede empezar solo con 0x20..0x7E)
+│     - nabu_fb_putc(c): gestiona \n / \r / desplazamiento
+│     - escritura de píxeles: base + rowBytes*y + 4*x, 32 bpp, escribe 0x00FFFFFF
+│     - todo se basa en PE_state.video; sin MMIO ni registros
+└── inject.py            inyección en tiempo de compilación
 ```
 
-### 注入点
+### Puntos de inyección
 
-1. `PE_init_kprintf()`（`pexpert/gen/pe_gen.c` 或 arm 的实现）
-   → 在初始化之后加：
+1. `PE_init_kprintf()` (`pexpert/gen/pe_gen.c` o la implementación de arm)
+   → añadir tras la inicialización:
    ```c
    if (PE_state.video.v_baseAddr != 0) { nabu_fb_init(); }
    ```
-2. `vputchar()`（`osfmk/console/printf.c` 或 pexpert 对应处）
-   → 串口输出之后追加 `nabu_fb_putc(c);`
+2. `vputchar()` (`osfmk/console/printf.c` o el equivalente en pexpert)
+   → añadir tras la salida serie: `nabu_fb_putc(c);`
 
-### 安全约束
+### Restricciones de seguridad
 
-- `v_baseAddr == 0` 或 `v_depth != 32` 或宽高异常 → **完全不启用**（直接 return）
-- 只做普通内存写；不读、不写任何 SoC 寄存器
-- 不做内存分配（早期无 malloc），静态数组保存光标/颜色
-- 失败绝不 panic，最坏情况就是"屏幕上什么都不多"
+- `v_baseAddr == 0`, o `v_depth != 32`, o ancho/alto anómalos → **no activar nada** (return directo).
+- Solo escrituras de memoria normal; no se lee ni se escribe ningún registro del SoC.
+- Sin asignación de memoria (al principio no hay malloc): arrays estáticos para cursor y color.
+- Un fallo nunca hace panic; en el peor caso, "no aparece nada más en pantalla".
 
-## 实施顺序
+## Orden de implementación
 
-1. 拉一份 xnu 源码（CI 或本地 clone 到 `~/xnu`），确认：
-   - `PE_init_kprintf` 的真实路径与函数体
-   - `vputchar` 的真实路径与签名
-   - `PE_state.video` 字段名与类型（`video_info_t`）
-2. 写 `nabu_fb_console.c`，用真实字段名；先在本地 `clang -fsyntax-only` 过一遍
-3. `inject.py`：基于锚点字符串插入，插入后**校验锚点唯一且插入成功**，失败直接让构建 fail
-4. 推 CI 编内核 → 重打 boot.img（`nabu-xnu64-*.img` 同流程）→ 真机 boot
-5. 判定：
-   - 屏幕出现内核早期文字 / `panic(...)` → console 通了 ✅
-   - 仍是只有 UniXNU 菜单 → 内核挂得比 `PE_init_kprintf` 更早
-     → 把 fb 初始化再前移（`arm_init` / `machine_startup` 之前），或直接放到
-       `Entry.S` 之后的 C 入口第一行
+1. Obtener el código de xnu (en el CI o clonado en `~/xnu`) y confirmar:
+   - la ruta real y el cuerpo de `PE_init_kprintf`
+   - la ruta real y la firma de `vputchar`
+   - nombre y tipo de los campos de `PE_state.video` (`video_info_t`)
+2. Escribir `nabu_fb_console.c` con los nombres reales; pasarle antes `clang -fsyntax-only` en local.
+3. `inject.py`: insertar con cadenas ancla; tras insertar, **comprobar que el ancla es única y que la inserción
+   tuvo éxito**; si falla, hacer fallar la compilación.
+4. Subir al CI para compilar el kernel → rehacer boot.img (mismo flujo que `nabu-xnu64-*.img`) → arrancar en el móvil.
+5. Criterio:
+   - Aparece texto temprano del kernel / `panic(...)` en pantalla → la consola funciona ✅
+   - Sigue viéndose solo el menú de UniXNU → el kernel muere antes de `PE_init_kprintf`
+     → adelantar la inicialización del fb (antes de `arm_init` / `machine_startup`), o ponerla en la primera línea
+       de la entrada en C tras `Entry.S`.
 
-## 与 PMGR 的关系
+## Relación con PMGR
 
-这是**前置项**：没有早期输出，PMGR 每一步都是盲改。
-console 打通后，PMGR 的调试循环变成：
-改 `NabuPlatformPower.cpp` → 编 → boot → 屏幕上直接看到读到的电压/时钟值。
+Es un **requisito previo**: sin salida temprana, cada paso de PMGR es un cambio a ciegas.
+Con la consola funcionando, el ciclo de depuración de PMGR pasa a ser:
+editar `NabuPlatformPower.cpp` → compilar → arrancar → ver en pantalla los valores de voltaje/reloj leídos.
 
 ---
 
-## 实测进展（2026-10-21 19:49）
+## Avance medido (2026-10-21 19:49)
 
-### 已修复：视频数组错位（真凶之一）
+### Corregido: array de vídeo desplazado (una de las causas reales)
 
-`DarwinBootPkg/Driver/BootVideo.h` 原来把 `boot_args.Video[6]` 写成了
+`DarwinBootPkg/Driver/BootVideo.h` escribía `boot_args.Video[6]` como
 
 ```
 [0]=base  [1]=1  [2]=rowBytes  [3]=width  [4]=height  [5]=32
 ```
 
-而 XNU（`pexpert/arm/pe_init.c:425`）期望
+mientras que XNU (`pexpert/arm/pe_init.c:425`) espera
 
 ```
 [0]=base  [1]=rowBytes  [2]=width  [3]=height  [4]=depth  [5]=display
 ```
 
-→ 内核读到 `rowBytes=1 / width=6400 / height=1600 / depth=2560`，
-`initialize_screen()` 判定失败 → **静默切回串口** → 屏幕永远没有内核输出。
+→ el kernel leía `rowBytes=1 / width=6400 / height=1600 / depth=2560`,
+`initialize_screen()` lo daba por fallido → **volvía en silencio al puerto serie** → nunca había salida del kernel en pantalla.
 
-已修正为正确布局（并同步修正 DarwinBoot 自己绘制文字时的下标）。
-修正后实测：`base=0x50000000 row=6400 width=1600 height=2560 depth=32 display=0` ✅
+Se corrigió al formato correcto (y los índices que usa DarwinBoot para dibujar su propio texto).
+Medido después: `base=0x50000000 row=6400 width=1600 height=2560 depth=32 display=0` ✅
 
-### 但仍无内核输出 → 内核死在 `PE_create_console` 之前
+### Pero sigue sin salida del kernel → el kernel muere antes de `PE_create_console`
 
-`osfmk/arm/arm_init.c:616` 的 `PE_create_console()` 是第一个可能出字的点。
-视频参数已完全正确却仍无输出，说明**没走到那里**。
+`PE_create_console()` en `osfmk/arm/arm_init.c:616` es el primer punto donde podría salir texto.
+Con los parámetros de vídeo ya correctos y aun así sin salida, significa que **no llega hasta ahí**.
 
-## 当前第一嫌疑：起始异常级别（EL）不匹配
+## Primera sospecha actual: el nivel de excepción (EL) de partida no coincide
 
-| 事实 | 说明 |
+| Hecho | Explicación |
 |---|---|
-| DarwinBoot 探针实测 `EL=4`（= EL1） | 我们现在**在 EL1** 交付内核 |
-| DarwinBoot 源码要求 `DarwinCurrentEl() == 4` | 它强制 EL1 |
-| 苹果真实链路 | **iBoot 在 EL2 交付，XNU 自己降到 EL1** |
+| La sonda de DarwinBoot mide `EL=4` (= EL1) | Ahora entregamos el kernel **en EL1** |
+| El código de DarwinBoot exige `DarwinCurrentEl() == 4` | Fuerza EL1 |
+| Cadena real de Apple | **iBoot entrega en EL2 y XNU baja a EL1 por sí mismo** |
 
-XNU 的 `arm_init` / `arm_start` 早期会访问 EL2 相关系统寄存器
-（`HCR_EL2`、`VTCR_EL2`、`VHE` 等）。**若内核以为自己在 EL2 而实际在 EL1，
-第一条相关指令就触发异常，且此时任何 console 都还没初始化 → 静默死亡。**
-这与观察完全一致：视频参数正确、内核入口代码执行了、却一个字都没有。
+Al principio, `arm_init` / `arm_start` de XNU acceden a registros de sistema de EL2
+(`HCR_EL2`, `VTCR_EL2`, `VHE`, etc.). **Si el kernel cree estar en EL2 pero está en EL1, la primera instrucción
+relacionada provoca una excepción, y todavía no hay ninguna consola inicializada → muerte silenciosa.**
+Coincide exactamente con lo observado: parámetros de vídeo correctos, el código de entrada del kernel se ejecutó,
+y ni una sola letra.
 
-### 验证方法（下一步，二选一）
+### Cómo comprobarlo (siguiente paso, una de dos)
 
-**A. 让内核自己说**（最直接）
-在 `osfmk/arm/arm_init.c` 的 `arm_init()` 第一行注入一个自包含的
-帧缓冲 putc（只写 `boot_args_ptr->Video` 指向的显存，不依赖任何 console）：
+**A. Que el kernel hable por sí mismo** (lo más directo)
+En la primera línea de `arm_init()` de `osfmk/arm/arm_init.c`, inyectar un `putc` de framebuffer autocontenido
+(que solo escriba en la memoria de vídeo a la que apunta `boot_args_ptr->Video`, sin depender de ninguna consola):
 
 ```c
 nabu_fb_early_init(boot_args_ptr->Video);
 nabu_fb_early_puts("arm_init enter\n");
 ```
-再在 `machine_startup`、`PE_init_platform`、`PE_create_console` 前后各打一个标记，
-就能精确看到内核走到第几行。
+Y poner un marcador antes y después de `machine_startup`, `PE_init_platform` y `PE_create_console`:
+así se ve con precisión hasta qué línea llega el kernel.
 
-**B. 改 DarwinBoot 在 EL2 交付**
-把 `DarwinCurrentEl() != 4` 的判断改成允许 EL2（或直接去掉），
-让内核按苹果真实链路从 EL2 起步。风险：DarwinBoot 本身当前跑在 EL1，
-要让它把控制权交给 EL2 需要额外做 EL 切换（`eret` 到 EL2），改动更大。
+**B. Cambiar DarwinBoot para entregar en EL2**
+Cambiar la comprobación `DarwinCurrentEl() != 4` para admitir EL2 (o quitarla), de modo que el kernel arranque
+desde EL2 como en la cadena real de Apple. Riesgo: DarwinBoot corre ahora en EL1; para que entregue el control en EL2
+hay que hacer un cambio de EL extra (`eret` a EL2), un cambio mayor.
 
-> 建议先做 A（信息量最大、风险最低），确认死点后再决定是否需要 B。
+> Se recomienda empezar por A (da más información y tiene menos riesgo) y, una vez localizado el punto de muerte,
+> decidir si hace falta B.
 
 ---
 
-## 方案调整：先用「方块检查点」，不做字库
+## Ajuste del plan: primero "bloques de control", sin fuente de texto
 
-写 8×16 字库要 ~1500 字节点阵数据，容易画花且不易校验；
-而**定位死点根本不需要文字**——只要知道"走到第几个检查点"即可。
+Escribir una fuente 8×16 exige ~1500 bytes de datos de puntos, es fácil dibujarla mal y difícil de verificar;
+y **localizar el punto de muerte no necesita texto**: basta saber en qué punto de control se llega.
 
-### 机制
+### Mecanismo
 
-`kits/nabu/nabu_early_mark.c`：往 `boot_args.Video` 指向的显存里画 **48×48 色块**，
-不依赖 console、不做分配、不碰寄存器，参数非法就静默放弃（`depth!=32` / `base==0`）。
+`kits/nabu/nabu_early_mark.c`: dibuja **bloques de color de 48×48** en la memoria de vídeo a la que apunta
+`boot_args.Video`; no depende de la consola, no asigna memoria, no toca registros, y si los parámetros no son válidos
+se rinde en silencio (`depth!=32` / `base==0`).
 
-### 读法（屏幕左上角一行方块）
+### Cómo se lee (una fila de bloques arriba a la izquierda)
 
-| 看到的方块数 | 含义 |
+| Bloques que se ven | Significado |
 |---|---|
-| **0 个** | 连 `arm_init` 都没进去 —— 死在汇编入口 / MMU 建立 |
-| **1 个（白）** | 进了 `arm_init` |
-| **2 个（黄）** | 过了 `PE_init_platform` |
-| **3 个（青）** | 过了 `PE_create_console` |
-| **4 个（绿）** | 过了 `machine_startup` |
-| **N 个红** | 参数非法（已安全放弃，没写坏内存） |
+| **0** | Ni siquiera entró en `arm_init`: muere en la entrada en ensamblador / al montar la MMU |
+| **1 (blanco)** | Entró en `arm_init` |
+| **2 (amarillo)** | Pasó `PE_init_platform` |
+| **3 (cian)** | Pasó `PE_create_console` |
+| **4 (verde)** | Pasó `machine_startup` |
+| **N en rojo** | Parámetros no válidos (abandonó con seguridad, sin corromper memoria) |
 
-### 注入点（下一轮，改 XNU 源码）
+### Puntos de inyección (siguiente ronda, modificando el código fuente de XNU)
 
 ```c
-// osfmk/arm/arm_init.c : arm_init() 第一行
+// osfmk/arm/arm_init.c : primera línea de arm_init()
 nabu_mark_init(boot_args_ptr->Video);
 NABU_MARK(1);
 
-// 之后在每关键步之后各插一个
+// después, uno tras cada paso clave
 PE_init_platform(...);   NABU_MARK(2);
 PE_create_console();     NABU_MARK(3);
-// machine_startup 内
+// dentro de machine_startup
 ```
 
-### 为什么这个方法更优
+### Por qué este método es mejor
 
-- 代码量 ~110 行，无点阵数据，几乎不可能"画错"
-- 判读只需数方块，照片/录像都能看清
-- 失败绝对安全（只做边界检查后的显存写）
-- 定位到具体阶段后，再决定是否需要上字库（那时可能已经不需要了）
+- ~110 líneas de código, sin datos de puntos: casi imposible "dibujarlo mal".
+- Para interpretarlo basta contar bloques; se ve bien en foto o vídeo.
+- Un fallo es totalmente seguro (solo escrituras de memoria de vídeo tras comprobar límites).
+- Una vez localizada la fase concreta, se decide si hace falta la fuente de texto (para entonces quizá ya no).

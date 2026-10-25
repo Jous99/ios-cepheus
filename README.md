@@ -2,9 +2,9 @@
 
 **Port de iOS/XNU (xnu-8796, iOS 16) al Xiaomi Mi 9 (`cepheus`, Snapdragon 855 / SM8150).**
 
-> **Estado: experimental, sin arrancar.** Esta es la base migrada (2026-10-25). El kernel compila y
-> los parches aplican, pero nada se ha probado todavía con esta cadena de arranque en tu Mi 9.
-> Lee `MIGRATION.md` antes de tocar nada.
+> **Estado: experimental, sin arrancar.** Esta es la base migrada (2026-10-25). Los parches aplican sobre xnu-8796.141.3,
+> pero el CI del kernel aún no se ha comprobado y nada se ha probado todavía con esta cadena de arranque en tu Mi 9.
+> Lee `MIGRATION.md` antes de tocar nada. Para el estado detallado, mira `STATUS.md` y `TODO-MEASURE.md`.
 
 ## Cadena de arranque
 
@@ -14,7 +14,7 @@ Android boot image -> BootShim -> Mu-Silicium UEFI -> DarwinBoot -> XNU
 
 Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 
-## Hardware de cepheus (datos de tu repo anterior)
+## Hardware de cepheus
 
 | Componente | Cepheus |
 | --- | --- |
@@ -26,6 +26,52 @@ Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 | UFS | `ufshc@1d84000` |
 | GIC-v3 | GICD `0x17a00000`, GICR `0x17a60000` |
 
+## Checklist
+
+### Hecho
+- [x] Hardware de cepheus identificado: SM8150, PM8150, táctil ST FTS en SE17, panel 1080x2340
+- [x] Direcciones de GIC y UFS confirmadas (coinciden con sweet)
+- [x] dtb base SM8150 v2 extraído de `boot.img`
+- [x] Overlay CEPHEUS extraído de `dtbo.img`
+- [x] Generador de ADT para cepheus (`scripts/make-cepheus-adt.py`)
+- [x] Migración a la base UniXNU-cepheus (2026-10-25): la serie de parches aplica sobre xnu-8796.141.3
+- [x] Configuración de máquina CEPHEUS en el kernel (parches `0004` / `0006`)
+- [x] Parche `0084`: botones del PM8150 (volumen+ en GPIO6, SID 0)
+- [x] Los `.gitignore` excluyen imágenes, firmware y copias de seguridad
+
+### Fase 0: Preparación del teléfono
+- [ ] Copia de seguridad de `boot`, `dtbo`, `vbmeta`, `persist`, `modemst1`, `modemst2`, `fsg` y `fsc`
+- [ ] Bootloader desbloqueado con Mi Unlock (revisar el estado de la cuenta)
+- [ ] Probar `fastboot boot` con un boot.img de Android sin modificar
+
+### Fase 1: Arranque y consola en pantalla
+- [ ] Medir en tu Mi 9: DRAM, `userdata` (first/last LBA) y dirección del framebuffer (`TODO-MEASURE.md`)
+- [ ] Comprobar `maxmem` / `owned_memory_size` en el ADT (ver nota en `TODO-MEASURE.md`)
+- [ ] Primer CI del kernel xnu-8796 compilando (`build-kernel-8796.yml`; vigilar los minutos de macOS)
+- [ ] Imagen UEFI `uefi-cepheus`: Mu-Silicium (`xiaomi-cepheus`) + DarwinBoot + BootShim
+- [ ] **Hito 1:** el kernel escribe texto en pantalla con `fastboot boot`
+
+### Fase 2: Almacenamiento y userland
+- [ ] Decidir el IPSW (iPad 17.7.11 de `board.toml` o iPhone X 16.7.16; el kernel xnu-8796 es de la línea iOS 16)
+- [ ] Imagen root en `userdata` (borra Android; confirmar antes)
+- [ ] **Hito 2:** launchd y el userland arrancan
+
+### Fase 3: Entrada
+- [ ] Verificar la lectura de botones en el teléfono (diagnóstico `CEPHEUS KEYS:` en el log)
+- [ ] Driver nuevo para el táctil ST FTS en SE17, con `st_fts_f1.ftb` (los drivers táctiles de la serie son de otras placas)
+- [ ] Touch, USB, RPMh y batería siguen siendo de sweet/nabu: hay que portarlos para cepheus
+- [ ] **Hito 3:** SpringBoard y Setup se pueden usar con el táctil
+
+### Fase 4: Extras (no prioritarios)
+- [ ] USB ECM para leer logs por red
+- [ ] Panel en modo comando (sin DSC)
+- [ ] Sensores y audio
+
+### Decisiones pendientes
+- [x] iOS puede ocupar `userdata` (aprobado el 2026-10-15); confirmar cada paso destructivo antes de ejecutarlo
+- [ ] Dual boot: aparcado, se retoma más adelante
+- [ ] IPSW definitivo (ver Fase 2)
+
 ## Estructura
 
 | Ruta | Contenido |
@@ -36,9 +82,12 @@ Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 | `xnu-8796/patches-disabled/` | Parches desactivados a propósito (hardware que la Mi 9 no tiene) |
 | `scripts/`, `kits/`, `configs/` | ADT, payload, plataforma y defconfig |
 | `.github/workflows/` | CI (`build-kernel-8796.yml` es el que corresponde a xnu-8796) |
-| `docs/` | Notas de UniXNU y `docs/ios-sweet-legacy/` (tu bitácora completa) |
+| `STATUS.md`, `TODO-MEASURE.md` | Estado y lista de mediciones (traducidos) |
+| `docs/` | Notas técnicas en español; `docs/original-zh/` guarda los originales en chino |
+| `docs/ios-sweet-legacy/` | Tu bitácora completa del port anterior |
 | `legacy/` | Tu shim, tus herramientas y tus parches propios anteriores |
-| `README.upstream.zh.md` | README original de UniXNU-cepheus (chino) |
+
+`docs/nabu-reference/` son notas históricas de la Pad 5 y siguen en su idioma original (chino/inglés).
 
 ## Trampas conocidas de SM8150 (de UniXNU/nabu)
 

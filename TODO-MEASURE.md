@@ -1,74 +1,87 @@
-# TODO-MEASURE：小米 9 真机实测清单
+# TODO-MEASURE: lista de mediciones en el Xiaomi Mi 9 real
 
-> 以下每一项都有对应的 board.toml / 脚本落点。实测工具：TWRP（或任意可进系统的恢复环境）+ fastboot + 小米 9 解锁 BL。
-> 平台级参考值（可直接沿用 raphael/nabu 的）与必须实测的值已区分。
+> Original en chino: `docs/original-zh/TODO-MEASURE.md`.
+> Cada punto tiene un lugar de destino en `board.toml` o en un script. Herramientas: TWRP (o cualquier recovery que permita entrar al sistema)
+> + fastboot + Mi 9 con el bootloader desbloqueado.
+> Se distinguen los valores de referencia de plataforma (que se pueden reutilizar de raphael/nabu) de los que hay que medir.
 
-## 1. DRAM（→ board.toml `[payload.adt]` dram_size）
+## 1. DRAM (-> `board.toml` `[payload.adt]` `dram_size`)
 
 ```bash
-# TWRP shell:
-cat /proc/meminfo | head -3        # 记 MemTotal
+# Shell de TWRP:
+cat /proc/meminfo | head -3        # anota MemTotal
 ```
-- 6GB 版：MemTotal ≈ 5.6–5.8×10^6 kB → 起步 `dram_size = 0x180000000`
-- 8GB 版：MemTotal ≈ 7.6–7.8×10^6 kB → 起步 `dram_size = 0x200000000`
-- 校准方法见 nabu STATUS.md：MemTotal + 预留（modem/hyp/rmtfs 约 816MB）≈ 物理容量
-- base 固定 `0x80000000`（SM8150 通用）
+- Versión de 6 GB: MemTotal ~ 5.6-5.8x10^6 kB -> valor inicial `dram_size = 0x180000000`
+- Versión de 8 GB: MemTotal ~ 7.6-7.8x10^6 kB -> valor inicial `dram_size = 0x200000000`
+- Método de calibración en el STATUS.md de nabu: MemTotal + reservas (modem/hyp/rmtfs, unos 816 MB) ~ capacidad física
+- La base es fija: `0x80000000` (común a SM8150)
 
-## 2. userdata 分区（→ board.toml `[userdata]` first_lba/last_lba）
+## 2. Partición userdata (-> `board.toml` `[userdata]` `first_lba`/`last_lba`)
 
 ```bash
-# TWRP shell（先确认 userdata 是 sda 几号分区）:
+# Shell de TWRP (primero confirma qué número de sda es userdata):
 ls -l /dev/block/by-name/userdata
-cat /sys/block/sda/sdaXX/start     # 512B 扇区
+cat /sys/block/sda/sdaXX/start     # sectores de 512 B
 cat /sys/block/sda/sdaXX/size
 ```
-换算：`first_lba = start / 8`，`last_lba = first_lba + size/8 - 1`（UFS LBA=4096B）
-交叉验证：`fastboot partition-size:userdata`（字节数应 = (last-first+1)*4096）
+Conversión: `first_lba = start / 8`, `last_lba = first_lba + size/8 - 1` (LBA de UFS = 4096 B)
+Verificación cruzada: `fastboot partition-size:userdata` (los bytes deben ser = (last-first+1)*4096)
 
-## 3. 面板 framebuffer 地址（→ make-cepheus-adt.py 的 fbcon 节点 reg）
+## 3. Dirección del framebuffer del panel (-> reg del nodo fbcon en `make-cepheus-adt.py`)
 
 ```bash
-# TWRP shell:
-cat /proc/device-tree/soc/qcom,mdss-sspp@0/... # 或直接
+# Shell de TWRP:
+cat /proc/device-tree/soc/qcom,mdss-sspp@0/... # o directamente
 dmesg | grep -i "mdss\|framebuffer\|s6e3fc"
 ```
-小米 9 面板：Samsung s6e3fc2x01，1080×2340。需要从cepheus 设备树找 MDSS/framebuffer 的物理地址和长度（nabu 是 `reg=<0x9C000000 0xC00000>`，cephues 不同）。
-设备树提取方法照抄 nabu `docs/nabu-dts-extract.md`（针对 boot.img 里的 dtb）。
+Panel del Mi 9: Samsung s6e3fc2x01, 1080x2340. Hay que encontrar en el device tree de cepheus la dirección física y la longitud
+de MDSS/framebuffer (en nabu es `reg=<0x9C000000 0xC00000>`; en cepheus es distinta).
+El método para extraer el device tree se copia de `docs/nabu-dts-extract.md` de nabu (para el dtb del boot.img).
 
-## 4. OS 卷 UUID（→ board.toml root_match_volume_uuid）
+## 4. UUID del volumen del OS (-> `board.toml` `root_match_volume_uuid`)
 
 ```bash
-# 电脑上，对 IPSW 解出的 OS dmg:
+# En el PC, sobre el dmg del OS extraído del IPSW:
 7z l -slt 044-76040-038.dmg | grep vol_uuid
 ```
-沿用 nabu 同款 IPSW 的话，可以直接先用 nabu 的值 `04769d26-2ca0-4825-b443-e2e5f88300f2`。
+Si se usa el mismo IPSW que nabu, se puede empezar directamente con el valor de nabu `04769d26-2ca0-4825-b443-e2e5f88300f2`.
 
-## 5. ADT 生成器（✅ 已完成：scripts/make-cepheus-adt.py）
+## 5. Generador de ADT (hecho: `scripts/make-cepheus-adt.py`)
 
-- 已基于 Lux12138/UniXNU fork 的 make-nabu-adt.py 改造完成，并新增 `/cepheus-fbcon` 节点（补丁 0003 消费：reg=<物理地址 大小> + width/height/stride）
-- **仍需实测**：fbcon 的 reg/size（§3 实测后用 `--fbcon-reg/--fbcon-size` 传入或改脚本默认值，当前是 nabu 占位值 0x9C000000/0xC00000）
+- Ya está adaptado a partir de `make-nabu-adt.py` del fork Lux12138/UniXNU, y se añadió el nodo `/cepheus-fbcon`
+  (lo consume el parche 0003: reg=<dirección física tamaño> + width/height/stride).
+- **Sigue por medir**: el reg/tamaño del fbcon (tras medir el punto 3, pásalo con `--fbcon-reg/--fbcon-size` o cambia los valores
+  por defecto del script; ahora son los valores provisionales de nabu `0x9C000000/0xC00000`).
 
-## 6. CI 里的 fork 地址
+## 6. Dirección del fork en el CI
 
-`.github/workflows/build-kernel.yml` 目前 clone 的是 `Lux12138/UniXNU`。起步阶段可以直接用（SM8150 内核工作都在里面）；长期建议 fork 一份 `UniXNU` 改为自己的远端，并在里面加 `make-cepheus-adt.py`。
+`.github/workflows/build-kernel.yml` clona ahora `Lux12138/UniXNU`. Al principio se puede usar tal cual (todo el trabajo de
+kernel para SM8150 está ahí); a largo plazo conviene hacer un fork de `UniXNU` con tu propio remoto y añadirle allí `make-cepheus-adt.py`.
 
-## 7. 内核补丁中的设备级内容（后期任务，不阻塞构建）
+## 7. Contenido de los parches del kernel específico de dispositivo (tarea posterior, no bloquea la compilación)
 
-`xnu-8796/patches/` 里 83 个补丁是 nabu 的 SM8150 内核工作积累，文件名保持原样。cephues 需要动的内容（实测后再改）：
-- `0004-nabu-machine-config.patch`：平台地址/DRAM 相关
-- `0010-nabu-early-framebuffer-debug.patch`：fbcon 地址
-- `0060~0063`（触摸驱动）：小米 9 触控 IC 与 nabu（NT36672?）不同，需要按 cepheus 设备树改
-- `0061-nabu-iphone-x-display-size.patch`：分辨率适配
-- UFS/USB/PMIC 大概率通用，先不动
+Los 83 parches de `xnu-8796/patches/` son el trabajo acumulado de kernel de nabu para SM8150; los nombres de archivo se mantienen.
+Lo que hay que tocar para cepheus (tras medir):
+- `0004-nabu-machine-config.patch`: direcciones de plataforma / relacionado con DRAM
+- `0010-nabu-early-framebuffer-debug.patch`: dirección del fbcon
+- `0060~0063` (drivers táctiles): el IC táctil del Mi 9 es distinto al de nabu (¿NT36672?); hay que cambiarlo según el device tree de cepheus
+- `0061-nabu-iphone-x-display-size.patch`: adaptación de resolución
+- UFS/USB/PMIC probablemente son comunes; de momento no se tocan
 
-## 6. 来自 nabu fork 最新实战的结论（2026-10-24）
+## 6 (bis). Conclusiones de la última práctica con el fork de nabu (2026-10-24)
 
-- nabu 当前的卡点是 execve 后 panic，已定位：ADT 缺 maxmem（owned memory 上限）导致
-  vm 页计数虚大 116 倍（freepg=91,199,444 页 ≈ 373GB），页分配必炸。
-  修复 = ADT 注入 maxmem=4864（等于 owned_memory_size）。
-  → **对 cepheus 的含义：实测出 dram_size / owned_memory_size 后，
-  maxmem 必须等于 owned_memory_size（6GB 机约 6144 减保留区，以实测为准）。**
-  CI 克隆的是 fork 最新代码，该修复已包含；本地 repos/UniXNU-nabu-fork 落后了，
-  需要时 `git -C repos/UniXNU-nabu-fork pull` 同步。
-- fork 全靠本地 WSL 构建，其 CI workflow 在新 runner 镜像上没有维护——
-  我们踩的 hostcompat 坑是首发，修法见 build-kernel.yml 的 HOST_COMPAT_CFLAGS 注释。
+(El original repite la numeración "6".)
+
+- El bloqueo actual de nabu es un panic tras `execve`, ya localizado: al ADT le falta `maxmem` (límite de memoria "owned"), lo que
+  infla 116 veces el contador de páginas de VM (freepg=91.199.444 páginas ~ 373 GB), y la asignación de páginas revienta sí o sí.
+  Arreglo = inyectar en el ADT `maxmem=4864` (igual a `owned_memory_size`).
+  -> **Qué significa para cepheus: una vez medidos `dram_size` / `owned_memory_size`,
+  `maxmem` debe ser igual a `owned_memory_size` (en una máquina de 6 GB, unos 6144 menos la zona reservada; vale lo que se mida).**
+  El CI clona el último código del fork, así que ese arreglo ya está incluido; el `repos/UniXNU-nabu-fork` local estaba atrasado y,
+  si hace falta, se sincroniza con `git -C repos/UniXNU-nabu-fork pull`.
+- El fork se compila solo en un WSL local, y su workflow de CI no se ha mantenido con las nuevas imágenes de runner:
+  la trampa de hostcompat que pisamos fue la primera; el arreglo está en el comentario `HOST_COMPAT_CFLAGS` de `build-kernel.yml`.
+
+> **Nota del traductor (2026-10-25):** en este repo, `scripts/make-cepheus-adt.py` **no fija `maxmem`** (se comprobó con grep en
+> scripts, kits, configs, board.toml y workflows; solo usa `darwinboot-memory-size`), y `board.toml` trae
+> `owned_memory_size = "0x20000000"`. Revisa este punto al medir la DRAM: es el mismo tipo de fallo que describe esta sección.

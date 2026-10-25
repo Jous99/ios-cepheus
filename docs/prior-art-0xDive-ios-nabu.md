@@ -1,68 +1,73 @@
-# 前作对比：0xDive/ios-nabu
+# Comparación con trabajos previos: 0xDive/ios-nabu
 
-调查时间 2026-10-21。仓库 <https://github.com/0xDive/ios-nabu>
-（2026-10-19 创建，Python，12 个 open PR/issue，最新 #34）。
+> Documento de la Xiaomi Pad 5 (nabu), traducido al español. El original en chino está en `docs/original-zh/`.
 
-## 他们走的是完全不同的路
+Investigado el 2026-10-21. Repositorio <https://github.com/0xDive/ios-nabu>
+(creado el 2026-10-19, Python, 12 PR/issues abiertos, el último #34).
 
-| 维度 | 0xDive/ios-nabu | 本项目（unixnu-nabu） |
+## Siguen un camino totalmente distinto
+
+| Aspecto | 0xDive/ios-nabu | Este proyecto (unixnu-nabu) |
 |---|---|---|
-| 引导层 | **U-Boot v2026.07**（Qualcomm phone U-Boot，pin `ece349ad...`） | **Mu-Silicium EDK2** + UniXNU |
-| 当前目标 | 先解决**日志通道**（USB gadget ACM console / `fastboot oem console`） | 直接启动 XNU |
-| 实测进度 | 卡在固件 / USB 栈 bring-up，**没有 XNU 启动成果** | **XNU 内核已进入执行**（`DARWINBOOT: hand-off to the kernel`） |
+| Capa de arranque | **U-Boot v2026.07** (U-Boot de teléfono Qualcomm, pin `ece349ad...`) | **Mu-Silicium EDK2** + UniXNU |
+| Objetivo actual | Resolver primero el **canal de logs** (consola USB gadget ACM / `fastboot oem console`) | Arrancar XNU directamente |
+| Avance medido | Atascados en el bring-up del firmware / pila USB, **sin ningún resultado de arranque de XNU** | **El kernel XNU ya entra en ejecución** (`DARWINBOOT: hand-off to the kernel`) |
 
-## 他们的具体卡点（PR #30–#34）
+## Sus puntos de bloqueo concretos (PR #30-#34)
 
-目标是让 Qualcomm USB 栈在 EDK2 里活过来，以便用 USB 当串口：
+El objetivo es que la pila USB de Qualcomm funcione dentro de EDK2 para usar USB como puerto serie:
 
-- 拿到 `PciHostBridge` 的 PE32 能 `LoadImage` 成功，但
-  `EFI_PCI_ROOT_BRIDGE_IO` / `EFI_PCI_IO` / `EFI_USB2_HC` / `EFI_USB_IO` **全部缺失**
-- 依据旧开源 `XhciPciEmulation.c`，认为应绑定 `QCOM_USB_CONFIG_PROTOCOL`
-  （GUID `E722B03F-B250-42CE-8EBD-5BD51812D037`，已在其 pinned SM8150 二进制里验证存在），
-  `EFI_USB_INIT` GUID `2DA15AC7-4909-4C4C-B8C3-A742195EA46E`
-- 调整 DXE 顺序（`pci-first` / `usb-stack-first`）会在 **EFI Shell 之前同步异常**：
-  `ELR 0x13FE0C440`、`ESR 0x02000000`（EC=0）、`FAR=0`
-  → 离线符号化到 `ArmCpuDxe::UpdateRegionMappingRecursive()`，
-  栈里有 `DxeCore::SetUefiImageMemoryAttributes()` / `ProtectUefiImage()`
-- 试过 `PcdImageProtectionPolicy = 0` 关掉镜像保护来定位，仍未跑通
-- Stage 8–11 大量 "host-only 审计"（U-Boot 编译、nabu DTS、PM8150B Type-C/PHY），
-  所有产物一律标 `safe_to_boot = false`，**从未发布可启动镜像**
+- Con el PE32 de `PciHostBridge`, `LoadImage` tiene éxito, pero
+  `EFI_PCI_ROOT_BRIDGE_IO` / `EFI_PCI_IO` / `EFI_USB2_HC` / `EFI_USB_IO` **faltan todos**.
+- Según el antiguo `XhciPciEmulation.c` de código abierto, creen que hay que enlazar `QCOM_USB_CONFIG_PROTOCOL`
+  (GUID `E722B03F-B250-42CE-8EBD-5BD51812D037`, comprobado que existe en su binario SM8150 fijado),
+  y `EFI_USB_INIT` con GUID `2DA15AC7-4909-4C4C-B8C3-A742195EA46E`.
+- Cambiar el orden de DXE (`pci-first` / `usb-stack-first`) provoca una **excepción síncrona antes de la EFI Shell**:
+  `ELR 0x13FE0C440`, `ESR 0x02000000` (EC=0), `FAR=0`
+  -> simbolizado sin conexión en `ArmCpuDxe::UpdateRegionMappingRecursive()`,
+  con `DxeCore::SetUefiImageMemoryAttributes()` / `ProtectUefiImage()` en la pila.
+- Probaron `PcdImageProtectionPolicy = 0` para desactivar la protección de imágenes y localizar el fallo; sigue sin funcionar.
+- Las etapas 8-11 son sobre todo "auditorías solo en host" (compilar U-Boot, DTS de nabu, Type-C/PHY del PM8150B);
+  todos los productos están marcados `safe_to_boot = false`, y **nunca han publicado una imagen arrancable**.
 
-## 对我们有用的三条情报
+## Tres datos útiles para nosotros
 
-### 1. EDK2 镜像保护的坑（记下来）
+### 1. La trampa de la protección de imágenes de EDK2 (anótala)
 
-`ArmCpuDxe::UpdateRegionMappingRecursive` + `PcdImageProtectionPolicy` 组合，
-在我们改 fdf / APRIORI / FD 尺寸时**没有踩到**，但一旦改动镜像布局或权限，
-可能触发同类早期 MMU 崩溃。排查手段：`PcdImageProtectionPolicy = 0` 做单变量对照。
+La combinación `ArmCpuDxe::UpdateRegionMappingRecursive` + `PcdImageProtectionPolicy`
+**no nos ha afectado** al tocar fdf / APRIORI / tamaño del FD, pero si se cambia la disposición o los permisos
+de la imagen, podría provocar el mismo tipo de fallo temprano de la MMU. Para investigarlo:
+`PcdImageProtectionPolicy = 0` como comparación de una sola variable.
 
-### 2. nabu 公共 DTS（PMGR 阶段的现成资料）
+### 2. El DTS público de nabu (material ya hecho para la fase PMGR)
 
 ```
 repo:   https://github.com/SeimoDev/linux-xiaomi-nabu
 commit: 4e6d08bb1b467c721e19cd693e4ec7388d982d73
 file:   arch/arm64/boot/dts/qcom/sm8150-xiaomi-nabu.dts
-兼容:   "xiaomi,nabu", "qcom,sm8150"
+compat: "xiaomi,nabu", "qcom,sm8150"
 ```
 
-PMGR / UFS / 时钟 / 稳压器节点**直接抄这个源**，比逆向 ApplePMGR 快得多。
-注意：需要配套的 `sm8150-wcd9340.dtsi`，U-Boot 自带树里没有。
+Los nodos de PMGR / UFS / relojes / reguladores se **copian directamente de esta fuente**; es mucho más rápido que
+hacer ingeniería inversa de ApplePMGR.
+Ojo: hace falta el `sm8150-wcd9340.dtsi` que lo acompaña; no está en el árbol que trae U-Boot.
 
-### 3. USB / PHY 硬件参数（以后写 USB、充电驱动要用）
+### 3. Parámetros de hardware de USB / PHY (para escribir después los drivers de USB y carga)
 
-| 项 | 值 |
+| Elemento | Valor |
 |---|---|
-| USB1 wrapper | `0x0A6F8800`（OTG，High-Speed） |
-| USB1 HS PHY | `0x088E2000` |
-| USB2 controller | `0x0A800000`（host，**SuperSpeed Plus**） |
-| PHY 供电 | 0.880V(PLL) / 1.800V(digital) / 3.072V(analog) |
+| Wrapper USB1 | `0x0A6F8800` (OTG, High-Speed) |
+| PHY HS de USB1 | `0x088E2000` |
+| Controlador USB2 | `0x0A800000` (host, **SuperSpeed Plus**) |
+| Alimentación del PHY | 0.880 V (PLL) / 1.800 V (digital) / 3.072 V (analógico) |
 | Type-C | `qcom,pm8150b-typec` + `qcom,pm8150b-vbus-reg` |
-| Android 实测 | `/sys/class/udc/a600000.dwc3`：`state=configured`，`maximum_speed=high-speed`，`is_otg=1` |
+| Medido en Android | `/sys/class/udc/a600000.dwc3`: `state=configured`, `maximum_speed=high-speed`, `is_otg=1` |
 
-## 结论
+## Conclusión
 
-**不跟随他们的路线。** 他们为了拿日志绕去 U-Boot，结果卡在固件层；
-本项目已经有可用的日志手段（屏幕 `Print` + 必要时 UART 115200），
-并且已经越过他们没到过的位置（内核执行）。
+**No seguimos su ruta.** Para conseguir logs se desviaron a U-Boot y se atascaron en la capa de firmware;
+este proyecto ya tiene medios de log utilizables (`Print` en pantalla y, si hace falta, UART a 115200)
+y ya ha pasado de un punto al que ellos no llegaron (ejecución del kernel).
 
-可借鉴的只有上面三条**资料性**情报，尤其是 nabu 公共 DTS —— 直接服务于 PMGR。
+Solo se aprovechan los tres datos **informativos** de arriba, sobre todo el DTS público de nabu, que sirve
+directamente para PMGR.
