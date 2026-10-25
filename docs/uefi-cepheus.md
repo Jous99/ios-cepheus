@@ -27,7 +27,7 @@ sudo apt update && sudo apt install -y git python3 python3-pip clang lld llvm do
 cd ~
 git clone --recurse-submodules https://github.com/UniXNU/UniXNU.git
 git clone --recursive https://github.com/Project-Silicium/Mu-Silicium.git
-git clone -b uefi-cepheus https://github.com/Jous99/ios-cepheus.git     # el parche está en esta rama
+git clone https://github.com/Jous99/ios-cepheus.git
 mkdir -p ~/ios-cepheus/out
 
 cd ~/Mu-Silicium && ./setup_env.sh -p apt && python3 -m pip install -r pip-requirements.txt

@@ -46,13 +46,7 @@ fastboot getvar partition-size:userdata
 `first_lba = start/8`, `last_lba = first_lba + size/8 - 1`. Si no coinciden con `board.toml`, corrígelos.
 Los valores actuales (6 GB, userdata ~111 GiB) vienen del repo original y no se han confirmado en tu unidad.
 
-## Cómo subirlo (desde un PC, cuando puedas)
-No sobrescribas `main`. Crea una rama:
-```
-git clone https://git.joustech.space/Jous/ios-cepheus.git && cd ios-cepheus
-git checkout -b unixnu-migration
-git rm -rq . && cp -a /RUTA/ios-cepheus-migrado/ios-cepheus/. .
-git add -A && git commit -m "Migración a base UniXNU-cepheus" && git push -u origin unixnu-migration
-```
-El CI (`build-kernel-8796.yml`) se dispara al hacer push a `main` con cambios en `xnu-8796/patches/`; en una rama no corre solo.
-Cuando lo lances, vigila los minutos de macOS.
+## Estado de las ramas
+La migración, las traducciones y la receta del UEFI (`docs/uefi-cepheus.md`) están en `main`, en GitHub y en Forgejo.
+Las ramas temporales (`unixnu-migration`, `traduccion-es`, `uefi-cepheus`, `cepheus-port`) se borraron el 2026-10-25 tras comprobar
+que todos sus commits estaban dentro de `main`. El historial anterior (shim de ios-sweet) sigue en el historial de `main`.
