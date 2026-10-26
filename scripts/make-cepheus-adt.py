@@ -201,7 +201,7 @@ def main():
                         ('#address-cells', struct.pack('<I', 2)),
                         ('#size-cells', struct.pack('<I', 2)),
                         ('ranges', struct.pack('<QQQ', 0, ARMIO_BASE, 0x08000000))],
-             [node('intc', [('compatible', b'arm,gic-v3\0'),
+             [node('gic', [('compatible', b'arm,gic-v3\0'),
                             ('reg', struct.pack('<4Q',
                                                 GIC_DIST - ARMIO_BASE, GIC_DIST_SIZE,
                                                 GIC_REDIST - ARMIO_BASE, GIC_REDIST_SIZE)),

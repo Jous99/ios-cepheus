@@ -13,6 +13,28 @@
   El shim se compila dentro de `bootimg`, así que **no hace falta recompilar el firmware**.
 - `bootimg` también necesita `--uefi` y `--dtb ~/Mu-Silicium/Resources/DTBs/cepheus.dtb`.
 
+## Primer arranque real (2026-10-25): se congela justo al saltar al kernel
+Se vio en el Mi 9: menú de UniXNU, entrada `XNU (SM8150 UFS)`, y el log de DarwinBoot hasta `inputs validated; exiting boot services` con la
+barra verde, sin salida del kernel después. Datos medidos (fotos): `va=0xFFFFFE0007004000 pa=0xC4804000 args=0xC5CC8000 owned=0x20000000`,
+vídeo `0x9C000000 1080x2340 row 4320`, kernel entrado en EL1.
+
+**Hipótesis fuerte (por aritmética y desensamblado; sin probar en el teléfono todavía):**
+- El kernel (`TCR_EL1` leído de su propio binario = `0x226511a511`: `TG0=16 KiB`, `TG1=16 KiB`) arma sus tablas de arranque con **bloques de 32 MiB**
+  (`start_first_cpu`: `lsr #25`, máscaras `0xffe000000`, paso `0x2000000`), así que exige que `virtBase` y `physBase` coincidan **módulo 32 MiB**.
+- DarwinBoot solo exige coincidencia módulo **2 MiB** (`#define BLOCK_SIZE SIZE_2MB`, pensado para kernels de 4 KiB).
+  Con tus valores: `VA mod 32 MiB = 0x1004000`, `PA mod 32 MiB = 0x804000` -> **desfase de 8 MiB**. Tras activar la MMU, el kernel se mapea 8 MiB
+  desplazado de donde DarwinBoot lo copió y la primera búsqueda de instrucciones por dirección virtual cae en memoria equivocada, sin salida alguna.
+- Arreglo: `uefi/DarwinBoot-32mb-window.patch` (BLOCK_SIZE = 32 MiB). Con él, la misma cuenta da desfase `0x0`.
+
+```bash
+cd ~/ios-cepheus && git pull
+cd ~/UniXNU/drivers/DarwinBoot && git apply ~/ios-cepheus/uefi/DarwinBoot-32mb-window.patch && echo DWB_OK
+cd ~/UniXNU
+./unixnu build firmware --uefi ~/Mu-Silicium -D ~/ios-cepheus 2>&1 | tee ~/build-firmware.log
+./unixnu bootimg --uefi ~/Mu-Silicium -D ~/ios-cepheus --dtb ~/Mu-Silicium/Resources/DTBs/cepheus.dtb -o ~/cepheus-xnu.img
+```
+No hace falta volver a flashear `cust` (el payload no cambia). Al arrancar, el `pa=` que imprime DarwinBoot debe cumplir `(pa - 0x1004000)` múltiplo de `0x2000000`.
+
 ## Qué hay y qué falta
 - Mu-Silicium **ya trae `cepheusPkg`** (Xiaomi Mi 9). Su estado declarado es *Inactive*; en UEFI figuran pantalla,
   almacenamiento y botones como funcionando, y USB host no.

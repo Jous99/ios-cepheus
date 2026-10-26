@@ -1,0 +1,19 @@
+diff -ruN a/DarwinBootPkg/Driver/DarwinBoot.c b/DarwinBootPkg/Driver/DarwinBoot.c
+--- a/DarwinBootPkg/Driver/DarwinBoot.c	2026-10-25 21:19:59.751424526 +0000
++++ b/DarwinBootPkg/Driver/DarwinBoot.c	2026-10-25 21:19:59.768628950 +0000
+@@ -18,7 +18,14 @@
+ #include "WindowSize.h"
+ 
+ #define WINDOW_SIZE  SIZE_256MB
+-#define BLOCK_SIZE   SIZE_2MB
++//
++// The kernel window is placed so that its physical start has the same offset inside a BLOCK_SIZE block as the
++// kernel's virtual base. A kernel built for 16 KiB pages (xnu-8796 with TCR_EL1.TG0/TG1 = 16 KiB) builds its
++// bootstrap tables from 32 MiB blocks, so the physical and virtual offsets must agree modulo 32 MiB; with a
++// 2 MiB rule the kernel text is mapped 8 MiB away from where it was copied and the first fetch after the MMU
++// is enabled lands in the wrong memory. A 32 MiB rule is also valid for kernels that only need 2 MiB.
++//
++#define BLOCK_SIZE   SIZE_32MB
+ #define MAX_SEGMENTS 64
+ 
+ typedef struct {

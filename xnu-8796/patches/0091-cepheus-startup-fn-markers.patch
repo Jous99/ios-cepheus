@@ -1,0 +1,13 @@
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -407,6 +407,10 @@
+ 		}
+ 		startup_phase = cur->subsystem - 1;
+ 		kernel_startup_log(cur->subsystem);
++		/* CEPHEUS debug: nombre (via nm) de cada funcion de fase EARLY_BOOT y posteriores */
++		if (cur->subsystem >= STARTUP_SUB_EARLY_BOOT && startup_phase >= STARTUP_SUB_ZALLOC) {
++			printf("CEPHEUS startup: fn %p rank %d\n", cur->func, cur->rank);
++		}
+ 		cur->func(cur->arg);
+ 		startup_entry_cur = ++cur;
+ 	}

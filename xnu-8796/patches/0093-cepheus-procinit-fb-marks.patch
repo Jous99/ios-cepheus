@@ -1,0 +1,25 @@
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -255,9 +255,14 @@
+ /*
+  * Initialize global process hashing structures.
+  */
++#if defined(__arm64__)
++#include <arm64/cepheus_early.h>
++#endif
++
+ static void
+ procinit(void)
+ {
++	cepheus_early_mark(30, "procinit enter");
+ 	/* CEPHEUS debug: pasos de procinit, para ver donde se queda */
+ 	printf("CEPHEUS procinit: 1 smr pid\n");
+ 	smr_hash_init(&pid_hash, maxproc / 4);
+@@ -268,6 +273,7 @@
+ 	printf("CEPHEUS procinit: 4 hash ui\n");
+ 	uihashtbl = hashinit(maxproc / 16, M_PROC, &uihash);
+ 	printf("CEPHEUS procinit: 5 done\n");
++	cepheus_early_mark(31, "procinit done");
+ }
+ STARTUP(EARLY_BOOT, STARTUP_RANK_FIRST, procinit);
+ 
