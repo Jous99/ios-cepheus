@@ -129,7 +129,7 @@ def main():
         parser.error('--cpu-regs: up to eight distinct Affinity1-numbered cores, boot CPU 0 first')
     cpus = [node('cpu%d' % index, [('state', b'running\0' if index == 0 else b'waiting\0'),
                                    ('reg', struct.pack('<I', reg)),
-                                   ('device_type', b'cpu\0'), ('compatible', b'arm,cortex-a76\0'),
+                                   ('device_type', b'cpu\0'), ('compatible', b'qcom,kryo485\0arm,cortex-a76\0'),
                                    ('timebase-frequency', struct.pack('<I', TIMEBASE))])
             for index, reg in enumerate(cpu_regs)]
     tree = node('device-tree', [
@@ -158,6 +158,7 @@ def main():
                         ('dram-base', struct.pack('<Q', DRAM_BASE)),
                         ('dram-size', struct.pack('<Q', args.dram_size)),
                         ('crypto-hash-method', b'sha2-384\0'),
+                        ('boot-manifest-hash', __import__('hashlib').sha384(b'cepheus boot manifest').digest()),
                         *( [('root-matching', ('<dict><key>IOProviderClass</key><string>IOMedia</string>'
                                                '<key>IOPropertyMatch</key><dict><key>UUID</key><string>' +
                                                args.root_match_volume_uuid.upper() + '</string></dict></dict>\0').encode())]
@@ -166,10 +167,11 @@ def main():
                         *empty_nvram_proxy()],
              [node('memory-map', ([("PackedRAMDisk" if args.packed_data_ramdisk else "RAMDisk", bytes(16))] if (args.data_ramdisk or args.packed_data_ramdisk) else []) +
                                  ([('TrustCache', bytes(16))] if args.trust_cache else [])),
-              node('manifest-properties')]),
+              node('manifest-properties'),
+              node('asmb', [('lp-sip0', struct.pack('<Q', 0x6f)), ('lp-sip1', struct.pack('<I', 1))])]),
         node('cpus', children=cpus),
         *([node('psci', [('compatible', b'arm,psci-1.0\0'), ('method', args.psci_method.encode() + b'\0')])] if len(cpus) > 1 else []),
-        node('defaults', [('sleep-disabled', struct.pack('<I', 1))]),
+        node('defaults', [('sleep-disabled', struct.pack('<I', 1)), ('no-effaceable-storage', struct.pack('<I', 1))]),
         node('options', []),
         # Consumed by patch 0003 (framebuffer serial console). Values are
         # TODO_MEASURE nabu placeholders until the cepheus DT is read.
