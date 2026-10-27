@@ -82,7 +82,7 @@ version = 1
 # forever as soon as any input device is detected -- the menu then needs
 # manual selection that is impossible without keys. Direct boot + a short
 # fallback keeps unattended bring-up loops moving.
-timeout = 3
+timeout = 0
 fallback_timeout = 5
 default = "xnu"
 
@@ -100,7 +100,7 @@ title = "XNU (SM8150 UFS)"
 type = "xnu"
 path = "Payloads/kernel.macho"
 initrd = "Payloads/ramdisk.img"
-args = "-v serial=3 debug=0x14e kextlog=0xfff kt_fixed_zones=120 -no_slto_panic amfi_get_out_of_my_way=1 rd=ufsroot0 native-ufs-root=1 native-ufs-allow-unverified=1 sheng-data-persist=2 sheng-smp=0 wdt=-1 sheng-disable-watchdogd=1 ufsrw=1 cpus=1 cepheustouch=0 cepheuskeys=0 unentitled_ios_sim_launch=1 ignition_level=1 launchd_unsecure_cache=1"
+args = "-v serial=3 debug=0x14e kextlog=0xfff kt_fixed_zones=120 -no_slto_panic amfi_get_out_of_my_way=1 rd=ufsroot0 native-ufs-root=1 native-ufs-allow-unverified=1 sheng-data-persist=2 sheng-smp=0 wdt=-1 sheng-disable-watchdogd=1 ufsrw=1 cpus=1 cepheustouch=0 cepheuskeys=1 unentitled_ios_sim_launch=1 ignition_level=1 launchd_unsecure_cache=1 cepheususb=2 cepheusfb_noconsole=1"
 TOML
 
 rm -f "$OUT"
