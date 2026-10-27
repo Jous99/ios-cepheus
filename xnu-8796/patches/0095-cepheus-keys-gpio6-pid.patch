@@ -1,0 +1,37 @@
+diff --git a/bsd/dev/cepheus_keys.c b/bsd/dev/cepheus_keys.c
+index 20a2d49..e82d01a 100644
+--- a/bsd/dev/cepheus_keys.c
++++ b/bsd/dev/cepheus_keys.c
+@@ -21,14 +21,15 @@ void cepheus_keys_init(void);
+ #define KEYS_OBS_PA      0x0e600000u
+ #define KEYS_CNFG_PA     0x0c40a000u
+ #define KEYS_PON_RT      0x0810u
+-/* Mi 9: volume-up is GPIO6 (0-based DT cell 6) of the PM8150 at SID 0, not
+- * PM6150L GPIO2 at SID 4. Offsets: block base 0xc000 + 0x100 * pin.
+- * NOT yet verified on hardware (see KEYS diagnostic line in the boot log). */
+-#define KEYS_GPIO_PPID   0x0c0u
+-#define KEYS_GPIO_RT     0xc610u
+-#define KEYS_GPIO_MODE   0xc640u
+-#define KEYS_GPIO_EN     0xc646u
+-#define KEYS_GPIO_SUBTYPE 0xc605u
++/* Mi 9: volume-up is GPIO6 of the PM8150 at SID 0 (cepheus.dts: vol_up gpios = <&pm8150_gpios 6 ACTIVE_LOW>).
++ * The qcom,spmi-gpio DT cell is 1-based, so GPIOn lives at peripheral 0xc0 + (n - 1): the DT interrupt list
++ * for pm8150_gpio6 is PID 0xc5. Registers: block base 0xc500, INT_RT_STS +0x10, MODE_CTL +0x40, EN_CTL +0x46.
++ * (0084 used the 0-based index and PPID 0x0c0, i.e. read the wrong pin.) */
++#define KEYS_GPIO_PPID   0x0c5u
++#define KEYS_GPIO_RT     0xc510u
++#define KEYS_GPIO_MODE   0xc540u
++#define KEYS_GPIO_EN     0xc546u
++#define KEYS_GPIO_SUBTYPE 0xc505u
+ #define KEYS_NO_APID     0xffffu
+ 
+ static vm_offset_t keys_core, keys_obs, keys_cnfg;
+@@ -120,7 +121,7 @@ keys_thread(void *arg, wait_result_t result)
+ 		for (int k = 0; k < 3; ++k) {
+ 			if ((k == 1 ? gok : pok) && now[k] != state[k]) {
+ 				state[k] = now[k];
+-				printf("CEPHEUS KEYS: key=%d down=%d pon=%#x gpio6:c610=%#x\n",
++				printf("CEPHEUS KEYS: key=%d down=%d pon=%#x gpio6:c510=%#x\n",
+ 				    k, state[k], pon, gpio);
+ 				cepheus_hid_key(k, state[k]);
+ 			}

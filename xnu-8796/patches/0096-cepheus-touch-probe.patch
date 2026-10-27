@@ -1,0 +1,164 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 3bc5a9c..70e0efd 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -111,6 +111,7 @@ bsd/dev/cepheus_touch.c			standard
+ bsd/dev/cepheus_rpmh.c			standard
+ bsd/dev/cepheus_spmi.c			standard
+ bsd/dev/cepheus_usb.c			standard
++bsd/dev/cepheus_touchprobe.c			standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+diff --git a/bsd/dev/cepheus_touchprobe.c b/bsd/dev/cepheus_touchprobe.c
+new file mode 100644
+index 0000000..658450a
+--- /dev/null
++++ b/bsd/dev/cepheus_touchprobe.c
+@@ -0,0 +1,126 @@
++/*
++ * CEPHEUS touch hardware probe, round 1: READ ONLY, prints what the firmware left behind.
++ *
++ * Mi 9 touch (cepheus.dts): ST FTS at I2C address 0x49 on i2c@0xc80000 = i2c17, QUPV3 wrapper 2 SE0
++ * (GCC_QUPV3_WRAP2_S0_CLK + wrapper 2 M/S AHB clocks), SDA/SCL on gpio55/gpio56 (function qup17),
++ * interrupt on gpio122, reset on gpio12. Addresses and register layouts come from the SM8150 sources in
++ * Linux (gcc-sm8150.c, pinctrl-sm8150.c, geni-se.h), not from the SM7150 constants of cepheus_touch.c.
++ *
++ * Safety: nothing is written. The GENI block is read only when BOTH wrapper AHB clocks report "on",
++ * because reading a clock-gated peripheral hangs the bus. Runs in its own thread, once.
++ * Prints 100 s after boot so the USB live log is up. Boot-arg cepheustouchprobe=0 disables it.
++ */
++#if defined(ARM64_BOARD_CONFIG_CEPHEUS)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/proc.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern int hz;
++void cepheus_touch_probe(void);
++
++#define TP_GCC_HALT_PA   0x0011e000u  /* GCC 0x100000 + 0x1e000: wrapper 2 branch status registers */
++#define TP_GCC_VOTE_PA   0x00152000u  /* GCC 0x100000 + 0x52000: APCS clock votes (0x52014 for wrapper 2) */
++#define TP_GENI_PA       0x00c80000u  /* i2c17 */
++#define TP_CLK_OFF       0x80000000u  /* CBCR bit 31 */
++
++struct tp_pin {
++	const char *name;
++	unsigned id;
++	vm_offset_t pa;                /* TLMM tile base + 0x1000 * id */
++};
++
++static const struct tp_pin tp_pins[] = {
++	{ "se17-a", 55, 0x03d37000u },
++	{ "se17-b", 56, 0x03d38000u },
++	{ "reset", 12, 0x0390c000u },
++	{ "irq", 122, 0x03d7a000u },
++};
++
++static inline uint32_t
++tp_rd(vm_offset_t base, uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(base + off);
++	__asm__ volatile ("dmb oshld" ::: "memory");
++	return v;
++}
++
++static const char *
++tp_clk(uint32_t v)
++{
++	return (v & TP_CLK_OFF) ? "OFF" : "on";
++}
++
++static void
++tp_thread(void *arg, wait_result_t result)
++{
++	static int chan;
++
++	(void)arg;
++	(void)result;
++	/* Wait so the USB live log (192.168.7.1:5140) is already up when the lines are printed; they also go to the ring. */
++	(void)tsleep(&chan, PZERO, "cepheustp", 100 * hz);
++	printf("CEPHEUS TPROBE: begin (read only)\n");
++
++	vm_offset_t halt = ml_io_map(TP_GCC_HALT_PA, 0x1000);
++	vm_offset_t vote = ml_io_map(TP_GCC_VOTE_PA, 0x1000);
++	uint32_t m_ahb = TP_CLK_OFF, s_ahb = TP_CLK_OFF, se_clk = TP_CLK_OFF, votes = 0;
++	if (halt != 0) {
++		m_ahb = tp_rd(halt, 0x004);
++		s_ahb = tp_rd(halt, 0x008);
++		se_clk = tp_rd(halt, 0x144);
++	}
++	if (vote != 0) {
++		votes = tp_rd(vote, 0x014);
++	}
++	printf("CEPHEUS TPROBE: GCC mapped halt=%d vote=%d | wrap2 m_ahb %#x (%s) s_ahb %#x (%s) se0_clk %#x (%s) | apcs vote %#x (bit1 s_ahb, bit2 m_ahb, bit4 se0)\n",
++	    halt != 0, vote != 0, m_ahb, tp_clk(m_ahb), s_ahb, tp_clk(s_ahb), se_clk, tp_clk(se_clk), votes);
++
++	for (unsigned i = 0; i < sizeof(tp_pins) / sizeof(tp_pins[0]); ++i) {
++		vm_offset_t va = ml_io_map(tp_pins[i].pa, 0x1000);
++		if (va == 0) {
++			printf("CEPHEUS TPROBE: gpio%u (%s) map failed\n", tp_pins[i].id, tp_pins[i].name);
++			continue;
++		}
++		uint32_t cfg = tp_rd(va, 0x0);
++		uint32_t io = tp_rd(va, 0x4);
++		uint32_t intr = tp_rd(va, 0x8);
++		printf("CEPHEUS TPROBE: gpio%u %-6s cfg %#x (pull %u func %u drv %u oe %u) io %#x (in %u out %u) intr_cfg %#x\n",
++		    tp_pins[i].id, tp_pins[i].name, cfg, cfg & 3u, (cfg >> 2) & 0xfu, (cfg >> 6) & 7u,
++		    (cfg >> 9) & 1u, io, io & 1u, (io >> 1) & 1u, intr);
++	}
++
++	if (halt != 0 && !(m_ahb & TP_CLK_OFF) && !(s_ahb & TP_CLK_OFF)) {
++		vm_offset_t se = ml_io_map(TP_GENI_PA, 0x1000);
++		if (se != 0) {
++			printf("CEPHEUS TPROBE: GENI i2c17 status %#x clk_cfg %#x fw_rev %#x clk_sel %#x dma_en %#x hw_param0 %#x force_default %#x output_ctrl %#x\n",
++			    tp_rd(se, 0x40), tp_rd(se, 0x48), tp_rd(se, 0x68), tp_rd(se, 0x7c), tp_rd(se, 0x258),
++			    tp_rd(se, 0xe24), tp_rd(se, 0x20), tp_rd(se, 0x24));
++		} else {
++			printf("CEPHEUS TPROBE: GENI map failed\n");
++		}
++	} else {
++		printf("CEPHEUS TPROBE: GENI i2c17 NOT read (wrapper 2 AHB clocks are off: the driver must enable them first)\n");
++	}
++	printf("CEPHEUS TPROBE: end\n");
++}
++
++void
++cepheus_touch_probe(void)
++{
++	uint32_t enabled = 1;
++	thread_t thread;
++
++	(void)PE_parse_boot_argn("cepheustouchprobe", &enabled, sizeof(enabled));
++	if (!enabled) {
++		return;
++	}
++	if (kernel_thread_start(tp_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_CEPHEUS */
+diff --git a/bsd/dev/cepheus_ufs.c b/bsd/dev/cepheus_ufs.c
+index a028e4b..41da716 100644
+--- a/bsd/dev/cepheus_ufs.c
++++ b/bsd/dev/cepheus_ufs.c
+@@ -53,6 +53,7 @@ extern void cepheus_sample_start(void);
+ extern void cepheus_keys_init(void);
+ extern void cepheus_touch_init(void);
+ extern void cepheus_usb_probe(void);
++extern void cepheus_touch_probe(void);
+ 
+ #define REG_CAP         0x00
+ #define REG_IS          0x20
+@@ -664,6 +665,7 @@ cepheus_ufs_init(void)
+ 	cepheus_keys_init();
+ 	cepheus_touch_init();
+ 	cepheus_usb_probe();
++	cepheus_touch_probe();
+ #endif
+ 	return 0;
+ }
