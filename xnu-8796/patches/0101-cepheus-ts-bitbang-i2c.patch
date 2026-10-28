@@ -1,0 +1,348 @@
+diff --git a/bsd/dev/cepheus_ts.c b/bsd/dev/cepheus_ts.c
+index 41cb9af..4f88b24 100644
+--- a/bsd/dev/cepheus_ts.c
++++ b/bsd/dev/cepheus_ts.c
+@@ -5,14 +5,16 @@
+  * interrupt gpio122 (GPIO, 8 mA, pull-up, IRQ is level low), vdd = fixed regulator driven by
+  * gpio84 (active high, 4 ms start-up), avdd = PM8150L LDO1 at 1.8 V through RPMh.
+  * Register addresses come from the SM8150 sources in Linux (gcc-sm8150.c, pinctrl-sm8150.c).
+- * The GENI FIFO I2C engine is the one of cepheus_touch.c (sweet), adapted to this SoC.
++ * The GENI FIFO I2C engine is the one of cepheus_touch.c (sweet), adapted to this SoC, but it cannot be used here:
++ * GENI_IF_DISABLE_RO stays 1 after selecting FIFO mode (SE17 is GPI-DMA only). I2C is bit-banged on gpio55/gpio56 instead
++ * (ts_use_geni = false); the GENI code is kept, unused.
+  * FTS protocol (event FIFO 0x85, event ids, coordinate packing, sense on 0x93) is taken from
+  * the public Xiaomi sm8150 kernel driver. No firmware is uploaded: the IC keeps its own.
+  *
+  * Staged by boot-arg cepheusts=N (default 0 = off, nothing is touched):
+  *   1  power + pins, every write read back; GCC/RCG state dumped. No clock writes, no I2C.
+- *   2  + vote the wrapper 2 AHB clocks and the SE0 clock, initialise the GENI engine. No I2C.
+- *   3  + release reset and read the FTS event FIFO for 1.5 s, logging every event.
++ *   2  + bit-bang bus self-test: both lines idle high and follow a wiggle (no clocks, no GENI). No I2C traffic.
++ *   3  + release reset, look for an ACK from 0x49 (SDA/SCL as 55/56, then swapped), read the FTS event FIFO for 1.5 s.
+  *   4  + sense on (0x93), poll the IRQ line and report touches to iOS (cepheus_hid_touch).
+  * cepheustsdelay=S: seconds after boot before starting (default 120, so the USB live log is already up).
+  * Use with cepheustouch=0: the old driver pokes registers of another SoC.
+@@ -113,6 +115,7 @@ static struct {
+ 	int x[TS_MAX], y[TS_MAX];
+ } ts;
+ static int ts_sleep_chan;
++static const bool ts_use_geni = false;     /* SE17 has no FIFO interface; see the header comment */
+ 
+ static uint32_t
+ ts_rd(vm_offset_t base, uint32_t off)
+@@ -382,10 +385,248 @@ ts_msg(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx, unsigned nr, b
+ 	return ts_msg_run(addr, tx, nt, rx, nr, stretch);
+ }
+ 
++/*
++ * Bit-banged I2C. The pull-ups are on the board, so a line is released by turning its output off (TLMM function 0,
++ * OE = 0) and driven low by turning the output on with the level latched at 0. About 100 kHz.
++ */
++#define TS_BB_US        5u
++#define TS_CFG_OE       0x200u
++
++static vm_offset_t ts_sda_va, ts_scl_va;
++static uint32_t ts_sda_cfg, ts_scl_cfg;     /* released state of each line */
++
++static void ts_sda_rel(void) { ts_wr(ts_sda_va, 0, ts_sda_cfg); }
++static void ts_sda_lo(void) { ts_wr(ts_sda_va, 0, ts_sda_cfg | TS_CFG_OE); }
++static unsigned ts_sda_rd(void) { return ts_rd(ts_sda_va, 4) & 1u; }
++static void ts_scl_rel(void) { ts_wr(ts_scl_va, 0, ts_scl_cfg); }
++static void ts_scl_lo(void) { ts_wr(ts_scl_va, 0, ts_scl_cfg | TS_CFG_OE); }
++static unsigned ts_scl_rd(void) { return ts_rd(ts_scl_va, 4) & 1u; }
++
++/* Release SCL and wait for it to go high (the IC may stretch the clock). */
++static bool
++ts_scl_hi(void)
++{
++	ts_scl_rel();
++	for (unsigned i = 0; i < 500; ++i) {
++		if (ts_scl_rd()) {
++			return true;
++		}
++		delay(2);
++	}
++	return false;
++}
++
++static bool
++ts_bb_init(bool swap)
++{
++	struct ts_pin *sda = ts_find(swap ? 56 : 55);
++	struct ts_pin *scl = ts_find(swap ? 55 : 56);
++	if (!sda || !scl || !sda->va || !scl->va) {
++		return false;
++	}
++	ts_sda_va = sda->va;
++	ts_scl_va = scl->va;
++	ts_wr(sda->va, 4, ts_rd(sda->va, 4) & ~2u);         /* output level latched low */
++	ts_wr(scl->va, 4, ts_rd(scl->va, 4) & ~2u);
++	ts_sda_cfg = ts_rd(sda->va, 0) & ~0x3ffu;           /* GPIO function, 2 mA, no pull, output off */
++	ts_scl_cfg = ts_rd(scl->va, 0) & ~0x3ffu;
++	ts_sda_rel();
++	ts_scl_rel();
++	delay(TS_BB_US);
++	return true;
++}
++
++/* Free a bus held by a half-finished transfer: up to 9 clocks, then a STOP. */
++static void
++ts_bb_recover(void)
++{
++	ts_sda_rel();
++	(void)ts_scl_hi();
++	delay(TS_BB_US);
++	for (unsigned i = 0; i < 9 && !ts_sda_rd(); ++i) {
++		ts_scl_lo();
++		delay(TS_BB_US);
++		(void)ts_scl_hi();
++		delay(TS_BB_US);
++	}
++	ts_sda_lo();
++	delay(TS_BB_US);
++	(void)ts_scl_hi();
++	delay(TS_BB_US);
++	ts_sda_rel();
++	delay(TS_BB_US);
++}
++
++static int
++ts_bb_start(void)
++{
++	ts_sda_rel();
++	if (!ts_scl_hi()) {
++		return ETIMEDOUT;
++	}
++	delay(TS_BB_US);
++	if (!ts_sda_rd()) {
++		return EBUSY;
++	}
++	ts_sda_lo();
++	delay(TS_BB_US);
++	ts_scl_lo();
++	delay(TS_BB_US);
++	return 0;
++}
++
++static void
++ts_bb_stop(void)
++{
++	ts_sda_lo();
++	delay(TS_BB_US);
++	(void)ts_scl_hi();
++	delay(TS_BB_US);
++	ts_sda_rel();
++	delay(TS_BB_US);
++}
++
++/* One byte out; returns 0 on ACK, ENXIO on NACK, ETIMEDOUT when SCL is held low. */
++static int
++ts_bb_write(uint8_t b)
++{
++	for (int i = 7; i >= 0; --i) {
++		if (b & (1u << i)) {
++			ts_sda_rel();
++		} else {
++			ts_sda_lo();
++		}
++		delay(TS_BB_US);
++		if (!ts_scl_hi()) {
++			return ETIMEDOUT;
++		}
++		delay(TS_BB_US);
++		ts_scl_lo();
++	}
++	ts_sda_rel();
++	delay(TS_BB_US);
++	if (!ts_scl_hi()) {
++		return ETIMEDOUT;
++	}
++	delay(TS_BB_US);
++	unsigned nack = ts_sda_rd();
++	ts_scl_lo();
++	delay(TS_BB_US);
++	return nack ? ENXIO : 0;
++}
++
++static int
++ts_bb_read(uint8_t *b, bool ack)
++{
++	uint8_t v = 0;
++	ts_sda_rel();
++	for (int i = 0; i < 8; ++i) {
++		delay(TS_BB_US);
++		if (!ts_scl_hi()) {
++			return ETIMEDOUT;
++		}
++		delay(TS_BB_US);
++		v = (uint8_t)((v << 1) | ts_sda_rd());
++		ts_scl_lo();
++	}
++	if (ack) {
++		ts_sda_lo();
++	}
++	delay(TS_BB_US);
++	if (!ts_scl_hi()) {
++		return ETIMEDOUT;
++	}
++	delay(TS_BB_US);
++	ts_scl_lo();
++	ts_sda_rel();
++	*b = v;
++	return 0;
++}
++
++/* START, address (write), nt bytes, then (if nr) repeated START, address (read) and nr bytes, STOP. */
++static int
++ts_bb_xfer(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx, unsigned nr)
++{
++	int err = ts_bb_start();
++	if (err) {
++		ts_bb_recover();
++		return err;
++	}
++	err = ts_bb_write((uint8_t)(addr << 1));
++	for (unsigned i = 0; !err && i < nt; ++i) {
++		err = ts_bb_write(tx[i]);
++	}
++	if (!err && nr) {
++		err = ts_bb_start();
++		if (!err) {
++			err = ts_bb_write((uint8_t)((addr << 1) | 1u));
++		}
++		for (unsigned i = 0; !err && i < nr; ++i) {
++			err = ts_bb_read(&rx[i], i + 1 < nr);
++		}
++	}
++	if (err == ETIMEDOUT || err == EBUSY) {
++		ts_bb_recover();
++	} else {
++		ts_bb_stop();
++	}
++	return err;
++}
++
++/* Stage 2: both lines idle high and each follows a wiggle. Nothing is sent to the IC. */
++static bool
++ts_bb_selftest(void)
++{
++	if (!ts_bb_init(false)) {
++		printf("CEPHEUS TS: bit-bang init failed\n");
++		return false;
++	}
++	unsigned sda0 = ts_sda_rd(), scl0 = ts_scl_rd();
++	ts_scl_lo();
++	delay(20);
++	unsigned scl_low = ts_scl_rd();
++	ts_scl_rel();
++	delay(20);
++	unsigned scl_hi = ts_scl_rd();
++	ts_sda_lo();
++	delay(20);
++	unsigned sda_low = ts_sda_rd();
++	ts_sda_rel();
++	delay(20);
++	unsigned sda_hi = ts_sda_rd();
++	printf("CEPHEUS TS: bus idle sda %u scl %u | wiggle: scl low %u released %u, sda low %u released %u\n",
++	    sda0, scl0, scl_low, scl_hi, sda_low, sda_hi);
++	return sda0 && scl0 && !scl_low && scl_hi && !sda_low && sda_hi;
++}
++
++/* Look for an ACK from 0x49 with SDA/SCL as gpio55/56, then swapped. Returns 0 or 1 (swapped), or -1. */
++static int
++ts_bb_find(bool verbose)
++{
++	for (unsigned swap = 0; swap < 2; ++swap) {
++		if (!ts_bb_init(swap != 0)) {
++			continue;
++		}
++		ts_bb_recover();
++		int err = ts_bb_xfer(TS_ADDR, NULL, 0, NULL, 0);
++		if (verbose || !err) {
++			printf("CEPHEUS TS: probe 0x49 with sda=gpio%u scl=gpio%u: %s (err %d)\n", swap ? 56u : 55u,
++			    swap ? 55u : 56u, err ? "no ack" : "ACK", err);
++		}
++		if (!err) {
++			return (int)swap;
++		}
++	}
++	return -1;
++}
++
+ /* Write one command byte, then read len bytes after a repeated START (FTS "writeRead"). */
+ static int
+ ts_read(uint8_t cmd, uint8_t *buf, unsigned len)
+ {
++	if (!ts_use_geni) {
++		return ts_bb_xfer(TS_ADDR, &cmd, 1u, buf, len);
++	}
+ 	int err = ts_msg(TS_ADDR, &cmd, 1u, NULL, 0, true);
+ 	if (err) {
+ 		return err;
+@@ -396,6 +637,9 @@ ts_read(uint8_t cmd, uint8_t *buf, unsigned len)
+ static int
+ ts_write_cmd(uint8_t cmd)
+ {
++	if (!ts_use_geni) {
++		return ts_bb_xfer(TS_ADDR, &cmd, 1u, NULL, 0);
++	}
+ 	return ts_msg(TS_ADDR, &cmd, 1u, NULL, 0, false);
+ }
+ 
+@@ -554,18 +798,23 @@ ts_thread(void *arg, wait_result_t result)
+ 	printf("CEPHEUS TS: avdd ldoc1 1800 mV vote err=%d\n", perr);
+ 	ok = ts_gpio(84, 0, 0, 0, true, true) && ok;                /* vdd (board regulator) on */
+ 	ts_wait(10);                                                /* DT start-up delay is 4 ms */
+-	ok = ts_gpio(55, 1, 0, 0, false, false) && ok;              /* qup17 SDA, 2 mA, no bias */
+-	ok = ts_gpio(56, 1, 0, 0, false, false) && ok;              /* qup17 SCL */
++	ok = ts_gpio(55, ts_use_geni ? 1 : 0, 0, 0, false, false) && ok;    /* SDA: qup17 or plain GPIO, 2 mA, no bias */
++	ok = ts_gpio(56, ts_use_geni ? 1 : 0, 0, 0, false, false) && ok;    /* SCL */
+ 	ts_dump_pins("after");
+ 	printf("CEPHEUS TS: stage 1 %s\n", (ok && !perr) ? "complete" : "INCOMPLETE");
+ 	if (ts.stage < 2 || !ok || perr) {
+ 		goto out;
+ 	}
+ 
+-	/* Stage 2: clocks and GENI engine. */
+-	bool clk = ts_clocks(&level);
+-	ts_dump_clocks();
+-	if (!clk || !ts_se_init(level)) {
++	/* Stage 2: the I2C bus. */
++	if (ts_use_geni) {
++		bool clk = ts_clocks(&level);
++		ts_dump_clocks();
++		if (!clk || !ts_se_init(level)) {
++			printf("CEPHEUS TS: stage 2 FAILED\n");
++			goto out;
++		}
++	} else if (!ts_bb_selftest()) {
+ 		printf("CEPHEUS TS: stage 2 FAILED\n");
+ 		goto out;
+ 	}
+@@ -581,10 +830,25 @@ ts_thread(void *arg, wait_result_t result)
+ 	ts_wait(100);
+ 	printf("CEPHEUS TS: reset released, irq level %u\n", ts_rd(ts_find(122)->va, 4) & 1u);
+ 	unsigned errors = 0;
++	if (!ts_use_geni) {
++		int dir = -1;
++		for (unsigned t = 0; t < 40 && dir < 0; ++t) {
++			dir = ts_bb_find(t < 2);
++			if (dir < 0) {
++				ts_wait(25);
++			}
++		}
++		if (dir < 0) {
++			printf("CEPHEUS TS: no ACK from 0x49 in either orientation after 1 s; the IC is not answering\n");
++			goto out;
++		}
++		printf("CEPHEUS TS: 0x49 answers with sda=gpio%u scl=gpio%u\n", dir ? 56u : 55u, dir ? 55u : 56u);
++		(void)ts_bb_init(dir != 0);
++	}
+ 	for (unsigned i = 0; i < 75 && !ts.dead; ++i) {
+ 		int err = ts_drain(true);
+ 		if (err && errors++ < 5) {
+-			printf("CEPHEUS TS: FIFO read err=%d irq=%#x status=%#x\n", err, ts.irq_status, ts_rd(ts.se, SE_STATUS));
++			printf("CEPHEUS TS: FIFO read err=%d irq=%#x\n", err, ts.irq_status);
+ 		}
+ 		ts_wait(20);
+ 	}
