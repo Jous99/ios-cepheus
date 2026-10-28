@@ -1,0 +1,95 @@
+diff --git a/bsd/dev/cepheus_ts.c b/bsd/dev/cepheus_ts.c
+index e3ba3c9..b8413b0 100644
+--- a/bsd/dev/cepheus_ts.c
++++ b/bsd/dev/cepheus_ts.c
+@@ -389,7 +389,7 @@ ts_msg(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx, unsigned nr, b
+  * Bit-banged I2C. The pull-ups are on the board, so a line is released by turning its output off (TLMM function 0,
+  * OE = 0) and driven low by turning the output on with the level latched at 0. About 100 kHz.
+  */
+-#define TS_BB_US        5u
++#define TS_BB_US        20u
+ #define TS_CFG_OE       0x200u
+ 
+ static vm_offset_t ts_sda_va, ts_scl_va;
+@@ -416,6 +416,15 @@ ts_scl_hi(void)
+ 	return false;
+ }
+ 
++/* Wait for SDA to be pulled up after it was released (the rise can be slow). */
++static void
++ts_sda_wait_hi(void)
++{
++	for (unsigned i = 0; i < 200 && !ts_sda_rd(); ++i) {
++		delay(2);
++	}
++}
++
+ static bool
+ ts_bb_init(bool swap)
+ {
+@@ -465,6 +474,7 @@ ts_bb_start(void)
+ 		return ETIMEDOUT;
+ 	}
+ 	delay(TS_BB_US);
++	ts_sda_wait_hi();
+ 	if (!ts_sda_rd()) {
+ 		return EBUSY;
+ 	}
+@@ -493,6 +503,7 @@ ts_bb_write(uint8_t b)
+ 	for (int i = 7; i >= 0; --i) {
+ 		if (b & (1u << i)) {
+ 			ts_sda_rel();
++			ts_sda_wait_hi();
+ 		} else {
+ 			ts_sda_lo();
+ 		}
+@@ -573,6 +584,30 @@ ts_bb_xfer(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx, unsigned n
+ 	return err;
+ }
+ 
++/* Microseconds a released line takes to read high after being driven low for 30 us (400 = never). */
++static unsigned
++ts_rise_us(bool sda)
++{
++	if (sda) {
++		ts_sda_lo();
++	} else {
++		ts_scl_lo();
++	}
++	delay(30);
++	if (sda) {
++		ts_sda_rel();
++	} else {
++		ts_scl_rel();
++	}
++	for (unsigned us = 0; us < 400; ++us) {
++		if (sda ? ts_sda_rd() : ts_scl_rd()) {
++			return us;
++		}
++		delay(1);
++	}
++	return 400;
++}
++
+ /* Stage 2: both lines idle high and each follows a wiggle. Nothing is sent to the IC. */
+ static bool
+ ts_bb_selftest(void)
+@@ -596,6 +631,8 @@ ts_bb_selftest(void)
+ 	unsigned sda_hi = ts_sda_rd();
+ 	printf("CEPHEUS TS: bus idle sda %u scl %u | wiggle: scl low %u released %u, sda low %u released %u\n",
+ 	    sda0, scl0, scl_low, scl_hi, sda_low, sda_hi);
++	unsigned rise_sda = ts_rise_us(true), rise_scl = ts_rise_us(false);
++	printf("CEPHEUS TS: rise time after release: sda %u us, scl %u us (half bit is %u us)\n", rise_sda, rise_scl, TS_BB_US);
+ 	return sda0 && scl0 && !scl_low && scl_hi && !sda_low && sda_hi;
+ }
+ 
+@@ -872,6 +909,9 @@ ts_thread(void *arg, wait_result_t result)
+ 		int e2 = ts_hwreg(0x0008, fwv, 2);
+ 		printf("CEPHEUS TS: chip id %02x%02x (err %d; 3670 expected) fw version %02x%02x (err %d)\n", id[0], id[1], e1,
+ 		    fwv[0], fwv[1], e2);
++		uint8_t id3[2] = { 0 };
++		int e3 = ts_hwreg(0x0007, id3, 2);
++		printf("CEPHEUS TS: chip id at 0x0007 %02x%02x (err %d; 396c on the FTM3 variant)\n", id3[0], id3[1], e3);
+ 	}
+ 	for (unsigned i = 0; i < 75 && !ts.dead; ++i) {
+ 		int err = ts_drain(true);
