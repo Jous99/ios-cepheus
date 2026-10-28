@@ -1,0 +1,34 @@
+diff --git a/bsd/dev/cepheus_ts.c b/bsd/dev/cepheus_ts.c
+index 2eaf614..41cb9af 100644
+--- a/bsd/dev/cepheus_ts.c
++++ b/bsd/dev/cepheus_ts.c
+@@ -406,7 +406,14 @@ ts_se_init(uint32_t level)
+ 	uint32_t tx = ts_rd(ts.se, SE_HW_TX), rx = ts_rd(ts.se, SE_HW_RX);
+ 	printf("CEPHEUS TS: i2c17 fw=%#x proto=%u status=%#x hw_tx=%#x hw_rx=%#x ios=%#x clk_level=%u\n",
+ 	    fw, (fw >> 8) & 0xffu, ts_rd(ts.se, SE_STATUS), tx, rx, ts_rd(ts.se, 0x908), level);
+-	if (((fw >> 8) & 0xffu) != 3u || (ts_rd(ts.se, 0x64) & 1u) || ((tx >> 24) & 0x3fu) != 32u ||
++	/*
++	 * GENI_IF_DISABLE_RO (0x64) bit 0 is set while the SE is in DMA / GSI mode, which is how this SE arrives (its
++	 * device tree node has dmas). It is checked again after the FIFO mode is selected below, not before.
++	 */
++	printf("CEPHEUS TS: i2c17 before FIFO select: if_disable %#x dma_en %#x gsi_en %#x clk_ctrl %#x s_fw %#x multilock %#x\n",
++	    ts_rd(ts.se, 0x64), ts_rd(ts.se, SE_DMA), ts_rd(ts.se, 0xe18), ts_rd(ts.se, 0x60), ts_rd(ts.se, 0x6c),
++	    ts_rd(ts.se, 0x74));
++	if (((fw >> 8) & 0xffu) != 3u || ((tx >> 24) & 0x3fu) != 32u ||
+ 	    ((rx >> 24) & 0x3fu) != 32u || ((tx >> 16) & 0x3fu) < 2u || ((rx >> 16) & 0x3fu) < 2u) {
+ 		printf("CEPHEUS TS: the SE has no I2C firmware or no 32-bit FIFOs; I2C skipped\n");
+ 		return false;
+@@ -421,6 +428,13 @@ ts_se_init(uint32_t level)
+ 	ts_wr(ts.se, SE_IRQ_CLR, 0xffffffffu);
+ 	ts_wr(ts.se, 0x648, 0xffffffffu);
+ 	ts_wr(ts.se, SE_DMA, 0);
++	uint32_t ifd = ts_rd(ts.se, 0x64);
++	printf("CEPHEUS TS: i2c17 after FIFO select: if_disable %#x dma_en %#x gsi_en %#x\n", ifd, ts_rd(ts.se, SE_DMA),
++	    ts_rd(ts.se, 0xe18));
++	if (ifd & 1u) {
++		printf("CEPHEUS TS: the FIFO interface is still disabled after selecting FIFO mode; I2C skipped\n");
++		return false;
++	}
+ 	ts_wr(ts.se, 0x28, ts_rd(ts.se, 0x28) | 0x7fu);
+ 	ts_wr(ts.se, 0xe30, ts_rd(ts.se, 0xe30) | 0x0fu);
+ 	ts_wr(ts.se, 0x24, 0x7f);
