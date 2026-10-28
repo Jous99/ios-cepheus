@@ -1,0 +1,67 @@
+diff --git a/iokit/Kernel/arm/hid/NabuHID.cpp b/iokit/Kernel/arm/hid/NabuHID.cpp
+index 8607dfd..5b25652 100644
+--- a/iokit/Kernel/arm/hid/NabuHID.cpp
++++ b/iokit/Kernel/arm/hid/NabuHID.cpp
+@@ -367,7 +367,7 @@ protected:
+ 	virtual UInt32 getProductID() APPLE_KEXT_OVERRIDE { return 2; }
+ private:
+ 	IOLock *fLock;
+-	int fLogicalW, fLogicalH, fOffX, fOffY;
++	int fPanelW, fPanelH, fLogicalW, fLogicalH, fOffX, fOffY;
+ 	bool fDown[CEPHEUS_TOUCH_FINGERS];
+ 	bool fEdge[CEPHEUS_TOUCH_FINGERS];
+ 	IOFixed fX[CEPHEUS_TOUCH_FINGERS];
+@@ -434,10 +434,27 @@ NabuHIDTouch::start(IOService *provider)
+ 	}
+ 	int native = 0;
+ 	PE_parse_boot_argn("cepheusfb_native", &native, sizeof(native));
+-	fLogicalW = native ? 1080 : 1125;
+-	fLogicalH = native ? 2400 : 2436;
+-	fOffX = (fLogicalW - 1080) / 2;
+-	fOffY = (fLogicalH - 2400) / 2;
++	/*
++	 * Panel size comes from the boot framebuffer, like NabuFramebuffer does (sweet 1080x2400, Mi 9 1080x2340),
++	 * so touches land on the same pixels the display shows.
++	 */
++	PE_Video video;
++	fPanelW = 1080;
++	fPanelH = 2400;
++	if (PE_current_console(&video) == 0 && video.v_width != 0 && video.v_height != 0) {
++		fPanelW = (int)video.v_width;
++		fPanelH = (int)video.v_height;
++	}
++	fLogicalW = fPanelW;
++	fLogicalH = fPanelH;
++	if (!native && fPanelW <= 1125 && fPanelH <= 2436) {
++		fLogicalW = 1125;
++		fLogicalH = 2436;
++	}
++	fOffX = (fLogicalW - fPanelW) / 2;
++	fOffY = (fLogicalH - fPanelH) / 2;
++	IOLog("CEPHEUS HID: touch panel %dx%d logical %dx%d offset %d,%d\n", fPanelW, fPanelH, fLogicalW, fLogicalH,
++	    fOffX, fOffY);
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */
+ 	setProperty("DisplayIntegrated", kOSBooleanTrue);
+ 	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */
+@@ -458,8 +475,8 @@ NabuHIDTouch::touch(int finger, bool down, int x, int y)
+ 	if (finger < 0 || finger >= CEPHEUS_TOUCH_FINGERS) {
+ 		return;
+ 	}
+-	x = x < 0 ? 0 : (x > 1079 ? 1079 : x);
+-	y = y < 0 ? 0 : (y > 2399 ? 2399 : y);
++	x = x < 0 ? 0 : (x > fPanelW - 1 ? fPanelW - 1 : x);
++	y = y < 0 ? 0 : (y > fPanelH - 1 ? fPanelH - 1 : y);
+ 
+ 	IOLockLock(fLock);
+ 	bool was = fDown[finger];
+@@ -472,8 +489,8 @@ NabuHIDTouch::touch(int finger, bool down, int x, int y)
+ 		return;
+ 	}
+ 	if (!was && down) {
+-		fEdge[finger] = x < CEPHEUS_TOUCH_EDGE_PX || x > 1079 - CEPHEUS_TOUCH_EDGE_PX ||
+-		    y < CEPHEUS_TOUCH_EDGE_PX || y > 2399 - CEPHEUS_TOUCH_EDGE_PX;
++		fEdge[finger] = x < CEPHEUS_TOUCH_EDGE_PX || x > fPanelW - 1 - CEPHEUS_TOUCH_EDGE_PX ||
++		    y < CEPHEUS_TOUCH_EDGE_PX || y > fPanelH - 1 - CEPHEUS_TOUCH_EDGE_PX;
+ 	}
+ 
+ 	collection = IOHIDEvent::digitizerEvent(now, 0, kIOHIDDigitizerTransducerTypeHand, false, 0, 0, 0);

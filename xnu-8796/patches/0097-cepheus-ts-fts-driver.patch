@@ -1,0 +1,666 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 70e0efd..af5d5fe 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -112,6 +112,7 @@ bsd/dev/cepheus_rpmh.c			standard
+ bsd/dev/cepheus_spmi.c			standard
+ bsd/dev/cepheus_usb.c			standard
+ bsd/dev/cepheus_touchprobe.c			standard
++bsd/dev/cepheus_ts.c			standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+diff --git a/bsd/dev/cepheus_rpmh.c b/bsd/dev/cepheus_rpmh.c
+index ec988e3..3682720 100644
+--- a/bsd/dev/cepheus_rpmh.c
++++ b/bsd/dev/cepheus_rpmh.c
+@@ -327,9 +327,14 @@ rh_send(uint32_t address, unsigned mv)
+ int
+ cepheus_rpmh_vreg_enable(const char *res, unsigned mv)
+ {
+-	/* Board-specific helper: do not apply PMIC5-LDO policy to arbitrary resources. */
+-	if (!res || strcmp(res, "ldoc11") || mv < 2950 || mv > 3400) {
+-		printf("CEPHEUS RPMH: expected ldoc11 and 2950..3400 mV\n");
++	/*
++	 * Board-specific helper: do not apply PMIC5-LDO policy to arbitrary resources.
++	 * Accepted: ldoc11 2950..3400 mV (sweet touch rail) and ldoc1 1700..1900 mV (Mi 9 FTS avdd, 1.8 V in cepheus.dts).
++	 */
++	bool allowed = res && ((!strcmp(res, "ldoc11") && mv >= 2950 && mv <= 3400) ||
++	    (!strcmp(res, "ldoc1") && mv >= 1700 && mv <= 1900));
++	if (!allowed) {
++		printf("CEPHEUS RPMH: expected ldoc11 2950..3400 mV or ldoc1 1700..1900 mV\n");
+ 		return EINVAL;
+ 	}
+ 	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
+diff --git a/bsd/dev/cepheus_ts.c b/bsd/dev/cepheus_ts.c
+new file mode 100644
+index 0000000..23ad81c
+--- /dev/null
++++ b/bsd/dev/cepheus_ts.c
+@@ -0,0 +1,606 @@
++/*
++ * CEPHEUS Mi 9 touch screen: ST FTS at I2C address 0x49 on i2c17 = QUPV3 wrapper 2, SE0.
++ *
++ * cepheus.dts: SDA/SCL gpio55/gpio56 (function qup17, 2 mA, no bias), reset gpio12 and
++ * interrupt gpio122 (GPIO, 8 mA, pull-up, IRQ is level low), vdd = fixed regulator driven by
++ * gpio84 (active high, 4 ms start-up), avdd = PM8150L LDO1 at 1.8 V through RPMh.
++ * Register addresses come from the SM8150 sources in Linux (gcc-sm8150.c, pinctrl-sm8150.c).
++ * The GENI FIFO I2C engine is the one of cepheus_touch.c (sweet), adapted to this SoC.
++ * FTS protocol (event FIFO 0x85, event ids, coordinate packing, sense on 0x93) is taken from
++ * the public Xiaomi sm8150 kernel driver. No firmware is uploaded: the IC keeps its own.
++ *
++ * Staged by boot-arg cepheusts=N (default 0 = off, nothing is touched):
++ *   1  power + pins, every write read back; GCC/RCG state dumped. No clock writes, no I2C.
++ *   2  + vote the wrapper 2 AHB clocks and the SE0 clock, initialise the GENI engine. No I2C.
++ *   3  + release reset and read the FTS event FIFO for 1.5 s, logging every event.
++ *   4  + sense on (0x93), poll the IRQ line and report touches to iOS (cepheus_hid_touch).
++ * cepheustsdelay=S: seconds after boot before starting (default 60).
++ * Use with cepheustouch=0: the old driver pokes registers of another SoC.
++ */
++#if defined(ARM64_BOARD_CONFIG_CEPHEUS)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern kern_return_t thread_terminate(thread_t);
++extern int cepheus_rpmh_vreg_enable(const char *res, unsigned mv);
++extern void cepheus_hid_touch(int finger, int down, int x, int y);
++void cepheus_ts_init(void);
++
++#define TS_ADDR         0x49u
++#define TS_GCC_PA       0x00100000u
++#define TS_SE_PA        0x00c80000u
++#define TS_GCC_VOTE     0x52014u            /* APCS vote: bit1 s_ahb, bit2 m_ahb, bit4 se0 clock */
++#define TS_VOTE_MASK    ((1u << 1) | (1u << 2) | (1u << 4))
++#define TS_RCG          0x1e148u            /* gcc_qupv3_wrap2_s0_clk_src */
++#define TS_BR_MAHB      0x1e004u
++#define TS_BR_SAHB      0x1e008u
++#define TS_BR_SE0       0x1e144u
++#define TS_MAX          10u
++#define TS_FIFO_READ    0x85u
++#define TS_CMD_SENSE_ON 0x93u
++#define TS_EV_NONE      0x00u
++#define TS_EV_ENTER     0x03u
++#define TS_EV_LEAVE     0x04u
++#define TS_EV_MOTION    0x05u
++#define TS_EV_ERROR     0x0fu
++#define TS_EV_READY     0x10u
++#define TS_EV_SIZE      8u
++
++#define SE_STATUS       0x040u
++#define SE_MCLK         0x048u
++#define SE_FW           0x068u
++#define SE_CLK_SEL      0x07cu
++#define SE_DMA          0x258u
++#define SE_TX_LEN       0x26cu
++#define SE_RX_LEN       0x270u
++#define SE_SCL          0x278u
++#define SE_CMD          0x600u
++#define SE_CTRL         0x604u
++#define SE_IRQ          0x610u
++#define SE_IRQ_EN       0x614u
++#define SE_IRQ_CLR      0x618u
++#define SE_TX           0x700u
++#define SE_RX           0x780u
++#define SE_TX_COUNT     0x800u
++#define SE_RX_COUNT     0x804u
++#define SE_HW_TX        0xe24u
++#define SE_HW_RX        0xe28u
++#define SE_TX_WM        0x80cu
++#define SE_RX_WM_IRQ    (1u << 26)
++#define SE_RX_LAST      (1u << 27)
++#define SE_TX_WM_IRQ    (1u << 30)
++#define SE_DONE         (1u << 0)
++#define SE_NACK         (1u << 10)
++#define SE_ERRORS       (0x3eu | (1u << 9) | (1u << 10) | (1u << 12) | \
++                         (1u << 13) | (3u << 24) | (3u << 28))
++#define SE_EVENTS       (SE_DONE | SE_ERRORS | SE_RX_WM_IRQ | SE_RX_LAST | SE_TX_WM_IRQ)
++/* Linux 8-bit I2C packing: MSB on the wire, LSB byte first in the FIFO. */
++#define SE_PACK0        0x0007f8feu
++#define SE_PACK1        0x000ffefeu
++
++struct ts_pin {
++	unsigned id;
++	vm_offset_t pa;                 /* TLMM tile base + 0x1000 * id (pinctrl-sm8150.c) */
++	vm_offset_t va;
++	const char *name;
++};
++
++static struct ts_pin ts_pins[] = {
++	{ 12, 0x0390c000u, 0, "reset" },        /* NORTH */
++	{ 84, 0x03954000u, 0, "vdd" },          /* NORTH */
++	{ 55, 0x03d37000u, 0, "sda" },          /* SOUTH */
++	{ 56, 0x03d38000u, 0, "scl" },          /* SOUTH */
++	{ 122, 0x03d7a000u, 0, "irq" },         /* SOUTH */
++};
++#define TS_NPINS (sizeof(ts_pins) / sizeof(ts_pins[0]))
++
++static struct {
++	vm_offset_t se, gcc;
++	bool dead;
++	int stage;
++	uint32_t irq_status, irq_last, active;
++	unsigned sent, got;
++	int x[TS_MAX], y[TS_MAX];
++} ts;
++static int ts_sleep_chan;
++
++static uint32_t
++ts_rd(vm_offset_t base, uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(base + off);
++	__asm__ volatile ("dmb oshld" ::: "memory");
++	return v;
++}
++
++static void
++ts_wr(vm_offset_t base, uint32_t off, uint32_t val)
++{
++	__asm__ volatile ("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(base + off) = val;
++	__asm__ volatile ("dsb osh" ::: "memory");
++}
++
++static void
++ts_wait(unsigned ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&ts_sleep_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static bool
++ts_wait_clear(vm_offset_t base, uint32_t off, uint32_t mask)
++{
++	for (unsigned i = 0; i < 5000; ++i) {
++		if (!(ts_rd(base, off) & mask)) {
++			return true;
++		}
++		delay(1);
++	}
++	return false;
++}
++
++static struct ts_pin *
++ts_find(unsigned id)
++{
++	for (unsigned i = 0; i < TS_NPINS; ++i) {
++		if (ts_pins[i].id == id) {
++			return &ts_pins[i];
++		}
++	}
++	return NULL;
++}
++
++/* TLMM: cfg bits 1:0 pull, 4:2 function, 8:6 drive, 9 output enable; io bit0 level in, bit1 level out. */
++static bool
++ts_gpio(unsigned id, unsigned mux, unsigned pull, unsigned drive, bool out, bool high)
++{
++	struct ts_pin *p = ts_find(id);
++	if (!p || !p->va) {
++		return false;
++	}
++	uint32_t cfg = ts_rd(p->va, 0);
++	if (out) {
++		/* Latch the wanted level before enabling the output. */
++		ts_wr(p->va, 4, (ts_rd(p->va, 4) & ~2u) | (high ? 2u : 0u));
++	}
++	cfg &= ~0x3ffu;
++	cfg |= (mux << 2) | pull | (drive << 6) | (out ? 0x200u : 0u);
++	ts_wr(p->va, 0, cfg);
++	uint32_t got = ts_rd(p->va, 0) & 0x3ffu;
++	uint32_t want = (mux << 2) | pull | (drive << 6) | (out ? 0x200u : 0u);
++	printf("CEPHEUS TS: gpio%u %-5s cfg want %#x got %#x (%s) io %#x\n", id, p->name, want, got,
++	    got == want ? "ok" : "MISMATCH", ts_rd(p->va, 4));
++	return got == want;
++}
++
++static void
++ts_dump_pins(const char *when)
++{
++	for (unsigned i = 0; i < TS_NPINS; ++i) {
++		if (ts_pins[i].va) {
++			printf("CEPHEUS TS: %s gpio%u %-5s cfg %#x io %#x\n", when, ts_pins[i].id, ts_pins[i].name,
++			    ts_rd(ts_pins[i].va, 0), ts_rd(ts_pins[i].va, 4));
++		}
++	}
++}
++
++static void
++ts_dump_clocks(void)
++{
++	printf("CEPHEUS TS: gcc vote %#x | m_ahb %#x s_ahb %#x se0 %#x (bit31 = off)\n",
++	    ts_rd(ts.gcc, TS_GCC_VOTE), ts_rd(ts.gcc, TS_BR_MAHB), ts_rd(ts.gcc, TS_BR_SAHB), ts_rd(ts.gcc, TS_BR_SE0));
++	printf("CEPHEUS TS: rcg cmd %#x cfg %#x m %#x n %#x d %#x dfs %#x\n", ts_rd(ts.gcc, TS_RCG),
++	    ts_rd(ts.gcc, TS_RCG + 4), ts_rd(ts.gcc, TS_RCG + 8), ts_rd(ts.gcc, TS_RCG + 0xc),
++	    ts_rd(ts.gcc, TS_RCG + 0x10), ts_rd(ts.gcc, TS_RCG + 0x14));
++	for (unsigned l = 0; l < 8; ++l) {
++		printf("CEPHEUS TS: rcg dfs level%u cfg %#x\n", l, ts_rd(ts.gcc, TS_RCG + 0x1cu + 4u * l));
++	}
++}
++
++/*
++ * Vote the clocks (only our three bits, other users untouched) and pick the 19.2 MHz source.
++ * *level receives the GENI CLK_SEL value. A DFS root is not reprogrammed: we select a level that
++ * is XO / 1, and give up (logging every level) when there is none.
++ */
++static bool
++ts_clocks(uint32_t *level)
++{
++	ts_wr(ts.gcc, TS_GCC_VOTE, ts_rd(ts.gcc, TS_GCC_VOTE) | TS_VOTE_MASK);
++	uint32_t dfs = ts_rd(ts.gcc, TS_RCG + 0x14u);
++	*level = 0;
++	if (dfs & 1u) {
++		bool found = false;
++		for (uint32_t l = 0; l < 8; ++l) {
++			uint32_t cfg = ts_rd(ts.gcc, TS_RCG + 0x1cu + 4u * l);
++			if ((cfg & 0x371fu) == 1u) {
++				*level = l;
++				found = true;
++				break;
++			}
++		}
++		if (!found) {
++			printf("CEPHEUS TS: no DFS level is XO/1; need clock integration (levels logged above)\n");
++			return false;
++		}
++	} else {
++		uint32_t cfg = ts_rd(ts.gcc, TS_RCG + 4u);
++		cfg = (cfg & ~(0x371fu | (1u << 20))) | 1u;      /* XO, HID divider 1: 19.2 MHz */
++		ts_wr(ts.gcc, TS_RCG + 4u, cfg);
++		ts_wr(ts.gcc, TS_RCG, ts_rd(ts.gcc, TS_RCG) | 1u);
++		if (!ts_wait_clear(ts.gcc, TS_RCG, 1u)) {
++			printf("CEPHEUS TS: RCG update timeout\n");
++			return false;
++		}
++	}
++	const uint32_t branches[] = { TS_BR_MAHB, TS_BR_SAHB, TS_BR_SE0 };
++	for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
++		if (!ts_wait_clear(ts.gcc, branches[i], 1u << 31)) {
++			printf("CEPHEUS TS: GCC branch %#x still halted (%#x)\n", branches[i], ts_rd(ts.gcc, branches[i]));
++			return false;
++		}
++	}
++	return true;
++}
++
++static void
++ts_abort(void)
++{
++	ts_wr(ts.se, SE_CTRL, 2);       /* abort the M command, release a held bus */
++	bool done = false;
++	for (unsigned i = 0; i < 5000; ++i) {
++		if (ts_rd(ts.se, SE_IRQ) & (1u << 5)) {
++			done = true;
++			break;
++		}
++		delay(1);
++	}
++	if (!done || !ts_wait_clear(ts.se, SE_STATUS, 1u)) {
++		ts.dead = true;
++		printf("CEPHEUS TS: abort failed status=%#x irq=%#x; stopping\n", ts_rd(ts.se, SE_STATUS), ts_rd(ts.se, SE_IRQ));
++	}
++	for (unsigned i = 0; i < 64 && (ts_rd(ts.se, SE_RX_COUNT) & 0x1ffffffu); ++i) {
++		(void)ts_rd(ts.se, SE_RX);
++	}
++	ts_wr(ts.se, SE_IRQ_CLR, 0xffffffffu);
++	if (ts_rd(ts.se, SE_TX_COUNT) & 0xfffffffu) {
++		ts.dead = true;
++		printf("CEPHEUS TS: TX FIFO not empty after abort; stopping\n");
++	}
++}
++
++static uint32_t
++ts_irq(void)
++{
++	ts.irq_last = ts_rd(ts.se, SE_IRQ);
++	ts.irq_status |= ts.irq_last;
++	return ts.irq_last;
++}
++
++/* One Linux-style FIFO message. TX is at most 3 bytes, RX at most 90. */
++static int
++ts_msg_run(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx, unsigned nr, bool stretch)
++{
++	if (ts.dead || nt > 3 || nr > 90 || (nt && nr) || (!nt && !nr)) {
++		return EIO;
++	}
++	if (!ts_wait_clear(ts.se, SE_STATUS, 1u)) {
++		ts.dead = true;
++		return EBUSY;
++	}
++	ts_wr(ts.se, SE_IRQ_CLR, 0xffffffffu);
++	ts_wr(ts.se, SE_TX_WM, nt ? 1u : 0u);
++	ts_wr(ts.se, nr ? SE_RX_LEN : SE_TX_LEN, nr ? nr : nt);
++	ts_wr(ts.se, SE_CMD, ((nr ? 2u : 1u) << 27) | ((uint32_t)addr << 9) | (stretch ? 4u : 0u));
++	int err = ETIMEDOUT;
++	for (unsigned i = 0; i < 20000; ++i) {
++		uint32_t irq = ts_irq();
++		if (irq & SE_ERRORS) {
++			err = (irq & SE_NACK) ? ENXIO : EIO;
++			/* A completed NACK is normal while probing an address: wait for DONE. */
++			for (unsigned j = 0; j < 5000 && !(irq & SE_DONE); ++j) {
++				delay(1);
++				irq = ts_irq();
++			}
++			if ((irq & SE_DONE) && !(ts_rd(ts.se, SE_STATUS) & 1u) &&
++			    !(ts_rd(ts.se, SE_TX_COUNT) & 0xfffffffu) && !(ts_rd(ts.se, SE_RX_COUNT) & 0x1ffffffu)) {
++				ts_wr(ts.se, SE_IRQ_CLR, irq);
++				return err;
++			}
++			break;
++		}
++		if (nt && !ts.sent && (irq & SE_TX_WM_IRQ)) {
++			uint32_t word = 0;
++			for (unsigned j = 0; j < nt; ++j) {
++				word |= (uint32_t)tx[j] << (8u * j);
++			}
++			ts_wr(ts.se, SE_TX, word);
++			ts.sent = nt;
++			ts_wr(ts.se, SE_TX_WM, 0);
++		}
++		uint32_t count = ts_rd(ts.se, SE_RX_COUNT) & 0x1ffffffu;
++		if (count > 64 || count > (nr - ts.got + 3u) / 4u) {
++			err = EIO;
++			break;
++		}
++		while (count--) {
++			uint32_t word = ts_rd(ts.se, SE_RX);
++			for (unsigned j = 0; j < 4 && ts.got < nr; ++j) {
++				rx[ts.got++] = (uint8_t)(word >> (8u * j));
++			}
++		}
++		if (irq & SE_DONE) {
++			irq = ts_irq();         /* a late error beats DONE */
++			if (irq & SE_ERRORS) {
++				continue;
++			}
++			ts_wr(ts.se, SE_IRQ_CLR, irq);
++			if (ts.got == nr && ts.sent == nt) {
++				return 0;
++			}
++			err = EIO;
++			break;
++		}
++		ts_wr(ts.se, SE_IRQ_CLR, irq & (SE_RX_WM_IRQ | SE_RX_LAST | SE_TX_WM_IRQ));
++		delay(1);
++	}
++	ts_abort();
++	return err;
++}
++
++static int
++ts_msg(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx, unsigned nr, bool stretch)
++{
++	ts.irq_status = ts.irq_last = 0;
++	ts.sent = ts.got = 0;
++	return ts_msg_run(addr, tx, nt, rx, nr, stretch);
++}
++
++/* Write one command byte, then read len bytes after a repeated START (FTS "writeRead"). */
++static int
++ts_read(uint8_t cmd, uint8_t *buf, unsigned len)
++{
++	int err = ts_msg(TS_ADDR, &cmd, 1u, NULL, 0, true);
++	if (err) {
++		return err;
++	}
++	return ts_msg(TS_ADDR, NULL, 0, buf, len, false);
++}
++
++static int
++ts_write_cmd(uint8_t cmd)
++{
++	return ts_msg(TS_ADDR, &cmd, 1u, NULL, 0, false);
++}
++
++static bool
++ts_se_init(uint32_t level)
++{
++	uint32_t fw = ts_rd(ts.se, SE_FW);
++	uint32_t tx = ts_rd(ts.se, SE_HW_TX), rx = ts_rd(ts.se, SE_HW_RX);
++	printf("CEPHEUS TS: i2c17 fw=%#x proto=%u status=%#x hw_tx=%#x hw_rx=%#x ios=%#x clk_level=%u\n",
++	    fw, (fw >> 8) & 0xffu, ts_rd(ts.se, SE_STATUS), tx, rx, ts_rd(ts.se, 0x908), level);
++	if (((fw >> 8) & 0xffu) != 3u || (ts_rd(ts.se, 0x64) & 1u) || ((tx >> 24) & 0x3fu) != 32u ||
++	    ((rx >> 24) & 0x3fu) != 32u || ((tx >> 16) & 0x3fu) < 2u || ((rx >> 16) & 0x3fu) < 2u) {
++		printf("CEPHEUS TS: the SE has no I2C firmware or no 32-bit FIFOs; I2C skipped\n");
++		return false;
++	}
++	if (ts_rd(ts.se, SE_STATUS) & 0x1001u) {
++		printf("CEPHEUS TS: SE0 already busy; I2C skipped\n");
++		return false;
++	}
++	ts_wr(ts.se, 0xe18, 0);                 /* no GSI events */
++	ts_wr(ts.se, 0xe1c, 0);                 /* mask external IRQ routing; poll the local status */
++	ts_wr(ts.se, 0x644, 0);
++	ts_wr(ts.se, SE_IRQ_CLR, 0xffffffffu);
++	ts_wr(ts.se, 0x648, 0xffffffffu);
++	ts_wr(ts.se, SE_DMA, 0);
++	ts_wr(ts.se, 0x28, ts_rd(ts.se, 0x28) | 0x7fu);
++	ts_wr(ts.se, 0xe30, ts_rd(ts.se, 0xe30) | 0x0fu);
++	ts_wr(ts.se, 0x24, 0x7f);
++	ts_wr(ts.se, 0x20, 1);
++	ts_wr(ts.se, SE_CLK_SEL, level);
++	ts_wr(ts.se, SE_MCLK, (7u << 4) | 1u);
++	ts_wr(ts.se, SE_SCL, (10u << 20) | (11u << 10) | 26u);         /* 100 kHz from 19.2 MHz */
++	ts_wr(ts.se, 0x254, 0);
++	ts_wr(ts.se, 0x260, SE_PACK0);
++	ts_wr(ts.se, 0x264, SE_PACK1);
++	ts_wr(ts.se, 0x284, SE_PACK0);
++	ts_wr(ts.se, 0x288, SE_PACK1);
++	ts_wr(ts.se, SE_TX_WM, 0);
++	ts_wr(ts.se, 0x810, 0);
++	ts_wr(ts.se, 0x814, ((rx >> 16) & 0x3fu) - 1u);
++	ts_wr(ts.se, SE_IRQ_EN, SE_EVENTS);
++	if (ts_rd(ts.se, 0x260) != SE_PACK0 || ts_rd(ts.se, 0x264) != SE_PACK1 ||
++	    ts_rd(ts.se, 0x284) != SE_PACK0 || ts_rd(ts.se, 0x288) != SE_PACK1 || ts_rd(ts.se, 0x254) != 0) {
++		printf("CEPHEUS TS: packing readback mismatch; I2C skipped\n");
++		return false;
++	}
++	if ((ts_rd(ts.se, SE_TX_COUNT) & 0xfffffffu) || (ts_rd(ts.se, SE_RX_COUNT) & 0x1ffffffu)) {
++		printf("CEPHEUS TS: inherited FIFO data; I2C skipped\n");
++		return false;
++	}
++	printf("CEPHEUS TS: GENI engine ready (100 kHz)\n");
++	return true;
++}
++
++static void
++ts_report(uint32_t mask, const int *x, const int *y)
++{
++	for (unsigned id = 0; id < TS_MAX; ++id) {
++		uint32_t bit = 1u << id;
++		if (mask & bit) {
++			if (!(ts.active & bit) || x[id] != ts.x[id] || y[id] != ts.y[id]) {
++				cepheus_hid_touch((int)id, 1, x[id], y[id]);
++			}
++			ts.x[id] = x[id];
++			ts.y[id] = y[id];
++		} else if (ts.active & bit) {
++			cepheus_hid_touch((int)id, 0, ts.x[id], ts.y[id]);
++		}
++	}
++	ts.active = mask;
++}
++
++/* Empty the FTS event FIFO (0x85, one 8-byte event per read). Returns the read error, if any. */
++static int
++ts_drain(bool log_all)
++{
++	static unsigned logged;
++	uint32_t mask = ts.active;
++	int x[TS_MAX], y[TS_MAX];
++	for (unsigned i = 0; i < TS_MAX; ++i) {
++		x[i] = ts.x[i];
++		y[i] = ts.y[i];
++	}
++	int err = 0;
++	for (unsigned n = 0; n < 32; ++n) {
++		uint8_t ev[TS_EV_SIZE] = { 0 };
++		err = ts_read(TS_FIFO_READ, ev, TS_EV_SIZE);
++		if (err || ev[0] == TS_EV_NONE) {
++			break;
++		}
++		if (log_all || logged < 40 || ev[0] == TS_EV_ERROR) {
++			if (logged < 400) {
++				printf("CEPHEUS TS: event %02x %02x %02x %02x %02x %02x %02x %02x\n", ev[0], ev[1], ev[2],
++				    ev[3], ev[4], ev[5], ev[6], ev[7]);
++				++logged;
++			}
++		}
++		unsigned id = ev[1] & 0x0fu;
++		if ((ev[0] == TS_EV_ENTER || ev[0] == TS_EV_MOTION) && id < TS_MAX) {
++			x[id] = (int)(((unsigned)ev[2] << 4) | (ev[4] >> 4));
++			y[id] = (int)(((unsigned)ev[3] << 4) | (ev[4] & 0x0fu));
++			mask |= 1u << id;
++		} else if (ev[0] == TS_EV_LEAVE && id < TS_MAX) {
++			mask &= ~(1u << id);
++		}
++	}
++	if (ts.stage >= 4) {
++		ts_report(mask, x, y);
++	}
++	return err;
++}
++
++static void
++ts_thread(void *arg, wait_result_t result)
++{
++	unsigned delay_s = 60;
++	uint32_t level = 0;
++	(void)arg;
++	(void)result;
++	(void)PE_parse_boot_argn("cepheustsdelay", &delay_s, sizeof(delay_s));
++	printf("CEPHEUS TS: stage %d, starting in %u s\n", ts.stage, delay_s);
++	ts_wait(delay_s * 1000u);
++
++	ts.gcc = ml_io_map(TS_GCC_PA, 0x60000);
++	ts.se = ml_io_map(TS_SE_PA, 0x4000);
++	bool pins_ok = true;
++	for (unsigned i = 0; i < TS_NPINS; ++i) {
++		ts_pins[i].va = ml_io_map(ts_pins[i].pa, 0x1000);
++		pins_ok = pins_ok && ts_pins[i].va != 0;
++	}
++	if (!ts.gcc || !ts.se || !pins_ok) {
++		printf("CEPHEUS TS: MMIO mapping failed\n");
++		goto out;
++	}
++	ts_dump_pins("before");
++	ts_dump_clocks();
++
++	/* Stage 1: rails and pins. The IC stays in reset (gpio12 low) until stage 3. */
++	bool ok = ts_gpio(122, 0, 3, 3, false, false);              /* IRQ input, 8 mA, pull-up */
++	ok = ts_gpio(12, 0, 3, 3, true, false) && ok;               /* reset output, held low */
++	int perr = cepheus_rpmh_vreg_enable("ldoc1", 1800);         /* avdd */
++	printf("CEPHEUS TS: avdd ldoc1 1800 mV vote err=%d\n", perr);
++	ok = ts_gpio(84, 0, 0, 0, true, true) && ok;                /* vdd (board regulator) on */
++	ts_wait(10);                                                /* DT start-up delay is 4 ms */
++	ok = ts_gpio(55, 1, 0, 0, false, false) && ok;              /* qup17 SDA, 2 mA, no bias */
++	ok = ts_gpio(56, 1, 0, 0, false, false) && ok;              /* qup17 SCL */
++	ts_dump_pins("after");
++	printf("CEPHEUS TS: stage 1 %s\n", (ok && !perr) ? "complete" : "INCOMPLETE");
++	if (ts.stage < 2 || !ok || perr) {
++		goto out;
++	}
++
++	/* Stage 2: clocks and GENI engine. */
++	bool clk = ts_clocks(&level);
++	ts_dump_clocks();
++	if (!clk || !ts_se_init(level)) {
++		printf("CEPHEUS TS: stage 2 FAILED\n");
++		goto out;
++	}
++	printf("CEPHEUS TS: stage 2 complete\n");
++	if (ts.stage < 3) {
++		goto out;
++	}
++
++	/* Stage 3: release reset and look at the event FIFO. */
++	ts_gpio(12, 0, 3, 3, true, false);
++	ts_wait(5);
++	ts_gpio(12, 0, 3, 3, true, true);
++	ts_wait(100);
++	printf("CEPHEUS TS: reset released, irq level %u\n", ts_rd(ts_find(122)->va, 4) & 1u);
++	unsigned errors = 0;
++	for (unsigned i = 0; i < 75 && !ts.dead; ++i) {
++		int err = ts_drain(true);
++		if (err && errors++ < 5) {
++			printf("CEPHEUS TS: FIFO read err=%d irq=%#x status=%#x\n", err, ts.irq_status, ts_rd(ts.se, SE_STATUS));
++		}
++		ts_wait(20);
++	}
++	printf("CEPHEUS TS: stage 3 done (%u read errors, dead=%d)\n", errors, ts.dead);
++	if (ts.stage < 4 || ts.dead || errors > 60) {
++		goto out;
++	}
++
++	/* Stage 4: sense on and report touches. */
++	int cerr = ts_write_cmd(TS_CMD_SENSE_ON);
++	printf("CEPHEUS TS: sense on err=%d; polling\n", cerr);
++	unsigned ticks = 0;
++	errors = 0;
++	while (!ts.dead) {
++		bool irq_low = !(ts_rd(ts_find(122)->va, 4) & 1u);
++		if (irq_low || ts.active || (++ticks % 50u) == 0) {
++			int err = ts_drain(false);
++			if (err) {
++				if ((errors++ % 200u) == 0) {
++					printf("CEPHEUS TS: read err=%d irq=%#x\n", err, ts.irq_status);
++				}
++			} else {
++				errors = 0;
++			}
++		}
++		ts_wait(10);
++	}
++	ts_report(0, ts.x, ts.y);
++out:
++	(void)thread_terminate(current_thread());
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++void
++cepheus_ts_init(void)
++{
++	int stage = 0;
++	thread_t thread;
++
++	(void)PE_parse_boot_argn("cepheusts", &stage, sizeof(stage));
++	if (stage <= 0) {
++		return;
++	}
++	ts.stage = stage > 4 ? 4 : stage;
++	if (kernel_thread_start(ts_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	} else {
++		printf("CEPHEUS TS: kernel_thread_start failed\n");
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_CEPHEUS */
+diff --git a/bsd/dev/cepheus_ufs.c b/bsd/dev/cepheus_ufs.c
+index 41da716..476ebbe 100644
+--- a/bsd/dev/cepheus_ufs.c
++++ b/bsd/dev/cepheus_ufs.c
+@@ -54,6 +54,7 @@ extern void cepheus_keys_init(void);
+ extern void cepheus_touch_init(void);
+ extern void cepheus_usb_probe(void);
+ extern void cepheus_touch_probe(void);
++extern void cepheus_ts_init(void);
+ 
+ #define REG_CAP         0x00
+ #define REG_IS          0x20
+@@ -666,6 +667,7 @@ cepheus_ufs_init(void)
+ 	cepheus_touch_init();
+ 	cepheus_usb_probe();
+ 	cepheus_touch_probe();
++	cepheus_ts_init();
+ #endif
+ 	return 0;
+ }
