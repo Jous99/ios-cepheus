@@ -1,0 +1,66 @@
+diff --git a/bsd/dev/cepheus_spmi.c b/bsd/dev/cepheus_spmi.c
+index 1eead9e..246d2f3 100644
+--- a/bsd/dev/cepheus_spmi.c
++++ b/bsd/dev/cepheus_spmi.c
+@@ -88,9 +88,11 @@ cepheus_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
+ {
+ 	/* Restrict access to the battery blocks; keys retain their own lanes. */
+ 	unsigned peripheral = addr >> 8;
+-	if (!sp_ready || !out || sid != 0 || addr > 0xffffu ||
+-	    (peripheral != 0x10 && peripheral != 0x11 && peripheral != 0x12 &&
+-	    peripheral != 0x13 && peripheral != 0x48)) {
++	bool battery = sid == 0 && (peripheral == 0x10 || peripheral == 0x11 || peripheral == 0x12 ||
++	    peripheral == 0x13 || peripheral == 0x48);
++	/* PM8150L (SID 4) regulator blocks, read only: lets cepheus_ts.c check the real state of the touch supply. */
++	bool pm8150l_ldo = sid == 4 && peripheral >= 0x40 && peripheral <= 0x4f;
++	if (!sp_ready || !out || addr > 0xffffu || (!battery && !pm8150l_ldo)) {
+ 		return -1;
+ 	}
+ 	IOLockLock(sp_lock);
+diff --git a/bsd/dev/cepheus_ts.c b/bsd/dev/cepheus_ts.c
+index c7c8c76..171e725 100644
+--- a/bsd/dev/cepheus_ts.c
++++ b/bsd/dev/cepheus_ts.c
+@@ -33,6 +33,8 @@ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern kern_return_t thread_terminate(thread_t);
+ extern int cepheus_rpmh_vreg_enable(const char *res, unsigned mv);
+ extern void cepheus_hid_touch(int finger, int down, int x, int y);
++extern int cepheus_spmi_init(void);
++extern int cepheus_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
+ void cepheus_ts_init(void);
+ 
+ #define TS_ADDR         0x49u
+@@ -698,6 +700,25 @@ ts_hwreg(uint16_t addr, uint8_t *out, unsigned n)
+ 	return err;
+ }
+ 
++/* Read only: type, status and enable of the PM8150L (SID 4) regulator blocks, to see whether avdd (ldoc1) is really on. */
++static void
++ts_pmic_scan(void)
++{
++	int init = cepheus_spmi_init();
++	printf("CEPHEUS TS: pmic access: spmi init %d\n", init);
++	for (unsigned p = 0x40; p <= 0x4f; ++p) {
++		uint8_t type = 0xff, sub = 0xff, st = 0xff, en = 0xff, v1 = 0xff, v2 = 0xff;
++		int e0 = cepheus_spmi_read(4, (p << 8) | 0x04, &type);
++		(void)cepheus_spmi_read(4, (p << 8) | 0x05, &sub);
++		(void)cepheus_spmi_read(4, (p << 8) | 0x08, &st);
++		(void)cepheus_spmi_read(4, (p << 8) | 0x46, &en);
++		(void)cepheus_spmi_read(4, (p << 8) | 0x40, &v1);
++		(void)cepheus_spmi_read(4, (p << 8) | 0x41, &v2);
++		printf("CEPHEUS TS: pm8150l %#x: type %02x sub %02x status1 %02x en_ctl %02x vset %02x%02x (err %d)\n", p << 8, type, sub,
++		    st, en, v2, v1, e0);
++	}
++}
++
+ /* Stage 3 experiments: which addresses ACK, then the system resets of the original driver and what follows them. */
+ static void
+ ts_experiments(void)
+@@ -900,6 +921,7 @@ ts_thread(void *arg, wait_result_t result)
+ 	ok = ts_gpio(55, ts_use_geni ? 1 : 0, 0, 0, false, false) && ok;    /* SDA: qup17 or plain GPIO, 2 mA, no bias */
+ 	ok = ts_gpio(56, ts_use_geni ? 1 : 0, 0, 0, false, false) && ok;    /* SCL */
+ 	ts_dump_pins("after");
++	ts_pmic_scan();
+ 	printf("CEPHEUS TS: stage 1 %s\n", (ok && !perr) ? "complete" : "INCOMPLETE");
+ 	if (ts.stage < 2 || !ok || perr) {
+ 		goto out;
