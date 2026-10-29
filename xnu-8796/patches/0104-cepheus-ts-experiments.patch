@@ -1,0 +1,58 @@
+diff --git a/bsd/dev/cepheus_ts.c b/bsd/dev/cepheus_ts.c
+index b8413b0..c7c8c76 100644
+--- a/bsd/dev/cepheus_ts.c
++++ b/bsd/dev/cepheus_ts.c
+@@ -698,6 +698,45 @@ ts_hwreg(uint16_t addr, uint8_t *out, unsigned n)
+ 	return err;
+ }
+ 
++/* Stage 3 experiments: which addresses ACK, then the system resets of the original driver and what follows them. */
++static void
++ts_experiments(void)
++{
++	uint32_t map[4] = { 0, 0, 0, 0 };
++	for (unsigned a = 0x03; a <= 0x77; ++a) {
++		if (ts_bb_xfer((uint8_t)a, NULL, 0, NULL, 0) == 0) {
++			map[a >> 5] |= 1u << (a & 31u);
++		}
++	}
++	printf("CEPHEUS TS: ack map (bit = 7-bit address) %08x %08x %08x %08x\n", map[3], map[2], map[1], map[0]);
++
++	static const struct {
++		uint8_t cmd[4];
++		uint16_t id_addr, fw_addr;
++		const char *name;
++	} resets[] = {
++		{ { 0xb6, 0x00, 0x28, 0x80 }, 0x0004, 0x0008, "system reset 0x0028" },
++		{ { 0xb6, 0x00, 0x23, 0x01 }, 0x0007, 0x000a, "system reset 0x0023" },
++	};
++	for (unsigned r = 0; r < 2; ++r) {
++		int err = ts_bb_xfer(TS_ADDR, resets[r].cmd, 4u, NULL, 0);
++		printf("CEPHEUS TS: %s sent (err %d), irq %u\n", resets[r].name, err, ts_rd(ts_find(122)->va, 4) & 1u);
++		ts_wait(300);
++		for (unsigned i = 0; i < 6; ++i) {
++			uint8_t ev[TS_EV_SIZE] = { 0 };
++			int e = ts_read(TS_FIFO_READ, ev, TS_EV_SIZE);
++			printf("CEPHEUS TS:   fifo %u: %02x %02x %02x %02x %02x %02x %02x %02x err=%d irq=%u\n", i, ev[0], ev[1], ev[2],
++			    ev[3], ev[4], ev[5], ev[6], ev[7], e, ts_rd(ts_find(122)->va, 4) & 1u);
++			ts_wait(20);
++		}
++		uint8_t id[2] = { 0 }, fwv[2] = { 0 };
++		int e1 = ts_hwreg(resets[r].id_addr, id, 2);
++		int e2 = ts_hwreg(resets[r].fw_addr, fwv, 2);
++		printf("CEPHEUS TS:   id at %#x: %02x%02x (err %d) fw %02x%02x (err %d)\n", (unsigned)resets[r].id_addr, id[0], id[1],
++		    e1, fwv[0], fwv[1], e2);
++	}
++}
++
+ static bool
+ ts_se_init(uint32_t level)
+ {
+@@ -912,6 +951,7 @@ ts_thread(void *arg, wait_result_t result)
+ 		uint8_t id3[2] = { 0 };
+ 		int e3 = ts_hwreg(0x0007, id3, 2);
+ 		printf("CEPHEUS TS: chip id at 0x0007 %02x%02x (err %d; 396c on the FTM3 variant)\n", id3[0], id3[1], e3);
++		ts_experiments();
+ 	}
+ 	for (unsigned i = 0; i < 75 && !ts.dead; ++i) {
+ 		int err = ts_drain(true);
