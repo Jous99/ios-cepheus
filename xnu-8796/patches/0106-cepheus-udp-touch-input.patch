@@ -1,0 +1,129 @@
+diff --git a/bsd/dev/cepheus_usb.c b/bsd/dev/cepheus_usb.c
+index ce10dba..244445f 100644
+--- a/bsd/dev/cepheus_usb.c
++++ b/bsd/dev/cepheus_usb.c
+@@ -848,6 +848,113 @@ ud_log_thread(void *arg __unused, wait_result_t wr __unused)
+ 	}
+ }
+ 
++/*
++ * Touch over USB Ethernet: UDP port 5141 of the phone (192.168.7.2) takes ASCII commands, one per line, so iOS can be
++ * driven from the PC while the touch IC does not work. Coordinates are panel pixels:
++ *   d F X Y   finger F (0..9) is down or moving at X Y
++ *   u F       finger F is up (it lifts where it last was)
++ * Boot-arg cepheusudpinput=0 disables it.
++ */
++extern void cepheus_hid_touch(int finger, int down, int x, int y);
++
++static const char *
++ud_in_int(const char *p, int *out)
++{
++	while (*p == ' ') {
++		++p;
++	}
++	int neg = (*p == '-');
++	if (neg) {
++		++p;
++	}
++	if (*p < '0' || *p > '9') {
++		return NULL;
++	}
++	int v = 0;
++	while (*p >= '0' && *p <= '9' && v < 100000) {
++		v = v * 10 + (*p++ - '0');
++	}
++	*out = neg ? -v : v;
++	return p;
++}
++
++static void
++ud_in_command(const char *line)
++{
++	static int last_x[10], last_y[10];
++	int f = 0, x = 0, y = 0;
++
++	if (line[0] == 'd') {
++		const char *p = ud_in_int(line + 1, &f);
++		p = p ? ud_in_int(p, &x) : NULL;
++		p = p ? ud_in_int(p, &y) : NULL;
++		if (p && f >= 0 && f < 10) {
++			last_x[f] = x;
++			last_y[f] = y;
++			cepheus_hid_touch(f, 1, x, y);
++		}
++	} else if (line[0] == 'u') {
++		if (ud_in_int(line + 1, &f) && f >= 0 && f < 10) {
++			cepheus_hid_touch(f, 0, last_x[f], last_y[f]);
++		}
++	}
++}
++
++static void
++ud_input_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	static char buf[256];
++	socket_t so = NULL;
++
++	for (;;) {
++		if (!ud.configured) {
++			ud_sleep_ms(200);
++			continue;
++		}
++		if (so == NULL) {
++			struct sockaddr_in a;
++			struct timeval tv = { 0, 200000 };
++			if (sock_socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, NULL, &so) != 0) {
++				so = NULL;
++				ud_sleep_ms(500);
++				continue;
++			}
++			bzero(&a, sizeof(a));
++			a.sin_len = sizeof(a);
++			a.sin_family = AF_INET;
++			a.sin_port = htons(5141);
++			a.sin_addr.s_addr = htonl(INADDR_ANY);
++			(void)sock_setsockopt(so, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++			if (sock_bind(so, (struct sockaddr *)&a) != 0) {
++				sock_close(so);
++				so = NULL;
++				ud_sleep_ms(500);
++				continue;
++			}
++		}
++		struct iovec iov = { .iov_base = buf, .iov_len = sizeof(buf) - 1 };
++		struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
++		size_t got = 0;
++		if (sock_receive(so, &msg, 0, &got) != 0 || got == 0) {
++			continue;               /* receive timeout */
++		}
++		buf[got] = 0;
++		for (char *line = buf; *line;) {
++			char *end = line;
++			while (*end && *end != '\n') {
++				++end;
++			}
++			char saved = *end;
++			*end = 0;
++			ud_in_command(line);
++			if (!saved) {
++				break;
++			}
++			line = end + 1;
++		}
++	}
++}
++
+ static void
+ cepheus_usb_gadget_start(vm_offset_t dwc)
+ {
+@@ -927,5 +1034,10 @@ cepheus_usb_gadget_start(vm_offset_t dwc)
+ 	if (livelog && ud.ifp != NULL && kernel_thread_start(ud_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++	int udpin = 1;
++	PE_parse_boot_argn("cepheusudpinput", &udpin, sizeof(udpin));
++	if (udpin && ud.ifp != NULL && kernel_thread_start(ud_input_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_CEPHEUS */
