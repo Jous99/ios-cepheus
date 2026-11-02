@@ -2,8 +2,9 @@
 
 **Port de iOS/XNU (xnu-8796, iOS 16) al Xiaomi Mi 9 (`cepheus`, Snapdragon 855 / SM8150).**
 
-> **Estado: experimental, sin arrancar.** Esta es la base migrada (2026-10-25). Los parches aplican sobre xnu-8796.141.3,
-> pero el CI del kernel aún no se ha comprobado y nada se ha probado todavía con esta cadena de arranque en tu Mi 9.
+> **Estado (02/11/2026): iOS 16.7.16 arranca en el Mi 9 y llega al inicio con iconos.** Se abre Ajustes, los botones llegan a iOS y el
+> táctil físico entrega toques (el primero se confirmó en el log). Sin GPU: iOS dibuja por CPU. Sin Wi-Fi, audio, batería ni sensores.
+> Detalle del último tramo en `docs/progreso-2026-11-02.md`. La GPU (Adreno 640) vive en el repo aparte `ios-cepheus-gpu`.
 > Lee `MIGRATION.md` antes de tocar nada. Para el estado detallado, mira `STATUS.md` y `TODO-MEASURE.md`.
 
 ## Cadena de arranque
@@ -29,59 +30,71 @@ Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 ## Checklist
 
 ### Hecho
-- [x] Hardware de cepheus identificado: SM8150, PM8150, táctil ST FTS en SE17, panel 1080x2340
+- [x] Hardware de cepheus identificado: SM8150, PM8150, táctil ST FTS (I²C `0x49`, SDA/SCL en gpio55/gpio56), panel 1080x2340
 - [x] Direcciones de GIC y UFS confirmadas (coinciden con sweet)
-- [x] dtb base SM8150 v2 extraído de `boot.img`
-- [x] Overlay CEPHEUS extraído de `dtbo.img`
-- [x] Generador de ADT para cepheus (`scripts/make-cepheus-adt.py`)
+- [x] dtb base SM8150 v2 extraído de `boot.img`; overlay CEPHEUS extraído de `dtbo.img`
+- [x] Generador de ADT para cepheus (`scripts/make-cepheus-adt.py`) e identidad de iPhone X (`scripts/adt-edit.py`: `/product` real del D22AP)
 - [x] Migración a la base UniXNU-cepheus (2026-10-25): la serie de parches aplica sobre xnu-8796.141.3
-- [x] Configuración de máquina CEPHEUS en el kernel (parches `0004` / `0006`)
-- [x] Parche `0084`: botones del PM8150 (volumen+ en GPIO6, SID 0)
 - [x] Los `.gitignore` excluyen imágenes, firmware y copias de seguridad
 
 ### Fase 0: Preparación del teléfono
 - [x] Copia de seguridad de `boot`, `dtbo`, `vbmeta`, `persist`, `modemst1`, `modemst2`, `fsg` y `fsc`
-- [x] Bootloader desbloqueado con Mi Unlock (revisar el estado de la cuenta)
+- [x] Bootloader desbloqueado con Mi Unlock
 - [x] Probar `fastboot boot` con un boot.img de Android sin modificar
 
-### Fase 1: Arranque y consola en pantalla
-- [ ] Medir en tu Mi 9: DRAM, `userdata` (first/last LBA) y dirección del framebuffer (`TODO-MEASURE.md`)
-- [ ] Comprobar `maxmem` / `owned_memory_size` en el ADT (ver nota en `TODO-MEASURE.md`)
-- [ ] Primer CI del kernel xnu-8796 compilando (`build-kernel-8796.yml`; vigilar los minutos de macOS)
-- [ ] Imagen UEFI: receta y parche listos en `docs/uefi-cepheus.md` + `uefi/` (sin compilar ni probar)
-- [ ] **Hito 1:** el kernel escribe texto en pantalla con `fastboot boot`
+### Fase 1: Arranque y consola
+- [x] CI del kernel xnu-8796 compilando (`build-kernel-8796.yml`; artefacto `xnu-8796-kernel` con `out/kernel.development.cepheus`)
+- [x] Imagen UEFI (`cepheus-xnu.img`) compilada y arrancando con `fastboot boot`
+- [x] **Hito 1:** el kernel arranca desde la partición `cust`
+- [x] Log en vivo por USB (CDC-ECM, UDP 5140) con `cepheususb=2`
 
 ### Fase 2: Almacenamiento y userland
-- [ ] Decidir el IPSW (iPad 17.7.11 de `board.toml` o iPhone X 16.7.16; el kernel xnu-8796 es de la línea iOS 16)
-- [ ] Imagen root en `userdata` (borra Android; confirmar antes)
-- [ ] **Hito 2:** launchd y el userland arrancan
+- [x] Userland de iPhone X 16.7.16 (20H392), raíz HFS+ `iOSRoot` en `userdata`
+- [x] Flasheo de `userdata` troceado con `simg2simg` (el `fastboot` de Windows corrompe a partir de 4 GiB): `scripts/flash-pieces.py` y `verify-simg2.py`
+- [x] **Hito 2:** launchd y el userland arrancan; SpringBoard con identidad de iPhone X
 
 ### Fase 3: Entrada
-- [ ] Verificar la lectura de botones en el teléfono (diagnóstico `CEPHEUS KEYS:` en el log)
-- [ ] Driver nuevo para el táctil ST FTS en SE17, con `st_fts_f1.ftb` (los drivers táctiles de la serie son de otras placas)
-- [ ] Touch, USB, RPMh y batería siguen siendo de sweet/nabu: hay que portarlos para cepheus
-- [ ] **Hito 3:** SpringBoard y Setup se pueden usar con el táctil
+- [x] Botones: encendido, volumen− y volumen+ llegan a iOS (parche `0095`)
+- [x] Táctil ST FTS: I²C por GPIO (el SE17 es solo GPI-DMA); protocolo de la generación nueva: cola con `0x86`, eventos `13/23/33`, escaneo `A0 00 FF` (parches `0097` a `0108`)
+- [x] Entrada desde el PC por UDP, puerto 5141 (`0106`; `scripts/phone-touch.py`)
+- [x] Consola de depuración del chip táctil por UDP (`0107`; `scripts/ts-console.py` y `scripts/ts-poll.py`)
+- [x] **Hito 3 (parcial):** SpringBoard llega al inicio, abre Ajustes y los toques físicos llegan a iOS (`CEPHEUS HID: touch` en el log)
+- [ ] Validar el uso prolongado con el dedo: escala de coordenadas y evento de «levantar» (`33`, supuesto por el patrón)
 
-### Fase 4: Extras (no prioritarios)
-- [ ] USB ECM para leer logs por red
+### Fase 4: Extras
+- [x] USB ECM para leer logs por red
+- [ ] Verificar el parche `0110`: la red debe volver tras reenumerar el USB (`usbipd detach` y `attach`)
+- [ ] Fecha y hora (iOS arranca el 31 de diciembre: no hay RTC)
+- [ ] Red de iOS por el cable USB (hoy solo la usa el log)
 - [ ] Panel en modo comando (sin DSC)
-- [ ] Sensores y audio
+- [ ] Wi-Fi, audio, batería y sensores
+
+### Fase 5: GPU (Adreno 640), en `ios-cepheus-gpu`
+- [x] Firmware identificado: `a630_sqe.fw`, `a640_gmu.bin` y `sm8150/a640_zap.mbn` (linux-firmware, redistribuibles; no se suben a git)
+- [x] Mapa de relojes y dominios: gpucc `0x2c90000`, GDSC CX `0x106c`, GX `0x100c`
+- [x] Consola de registros de solo lectura por UDP (`0109`)
+- [ ] Verificar `0111`: el primer `survey` hizo kernel panic por leer un offset fuera de la ventana del GCC
+- [ ] G1 relojes del gpucc y dominio CX; G2 firmware del GMU; G3 HFI y GX; G4 SQE y zap (TrustZone); G5 orden mínima
+- [ ] Que iOS use esa GPU: sin garantía (AdrenoMetal está atado al ABI de iPadOS 17.7.11)
 
 ### Decisiones pendientes
 - [x] iOS puede ocupar `userdata` (aprobado el 2026-10-15); confirmar cada paso destructivo antes de ejecutarlo
 - [ ] Dual boot: aparcado, se retoma más adelante
-- [ ] IPSW definitivo (ver Fase 2)
+- [ ] Licencia del repo de la GPU
+- [ ] Seguridad: revocar el classic token de GitHub, el secreto `FORGEJO_TOKEN` y los tokens antiguos de Forgejo (sin confirmar)
 
 ## Estructura
 
 | Ruta | Contenido |
 | --- | --- |
 | `board.toml` | Descripción de la placa (**ver aviso de medidas en `MIGRATION.md`**) |
-| `xnu-8796/patches/` | Serie de parches que aplica el CI (0001-0082 y 0084) |
+| `xnu-8796/patches/` | Serie de parches que aplica el CI (0001-0082 y 0084-0111) |
 | `xnu-8796/patches-extra/` | Parches de debug tuyos, portados; **no** se aplican por defecto |
 | `uefi/`, `docs/uefi-cepheus.md` | Parche de Mu-Silicium (`cepheusPkg` + UniXNU/DarwinBoot) y receta de construcción |
 | `xnu-8796/patches-disabled/` | Parches desactivados a propósito (hardware que la Mi 9 no tiene) |
 | `scripts/`, `kits/`, `configs/` | ADT, payload, plataforma y defconfig |
+| `scripts/phone-touch.py`, `ts-console.py`, `ts-poll.py` | Herramientas del PC: tocar iOS y depurar el chip táctil por UDP |
+| `docs/progreso-*.md` | Diario de progreso por tramos |
 | `.github/workflows/` | CI (`build-kernel-8796.yml` es el que corresponde a xnu-8796) |
 | `STATUS.md`, `TODO-MEASURE.md` | Estado y lista de mediciones (traducidos) |
 | `docs/` | Notas técnicas en español; `docs/original-zh/` guarda los originales en chino |
@@ -99,15 +112,31 @@ Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 - `build-libpthread-kernel.py` debe estar en `archives`, o hay panic de pthread.
 - "El log se para" no significa "el kernel se paró": usa `boot-progress=2` para ver puntos de control.
 - Cable USB malo: la imagen de 96 MB da `Load Error`.
+- `fastboot` de Windows corrompe imágenes sparse a partir de 4 GiB: trocear con `simg2simg` y flashear con `scripts/flash-pieces.py`.
+- El log en vivo solo recoge lo que se imprime con el PC ya con IP: arranca `sweet-usbnet.sh` antes de `fastboot boot`.
+- El driver USB heredado perdía la red al reenumerar el dispositivo (cualquier `usbipd detach`/`attach`); arreglo `0110`, sin verificar.
+- El SE17 del táctil es solo GPI-DMA (`GENI_IF_DISABLE_RO` queda en 1): el I²C va por GPIO.
+- Una lectura de registro fuera de la ventana mapeada es un fallo de acceso del kernel (panic): comprueba el offset contra el tamaño.
 
-## Flasheo (cuando haya artefactos)
+## Flasheo y arranque
 
-```
-fastboot flash cust cust-payload.img   # única escritura: partición cust
-fastboot boot cepheus-xnu.img          # arranque temporal, no escribe en disco
-```
+Solo se escribe en `cust` (kernel y configuración); `userdata`, con iOS, no se toca. Tres ventanas: **A** WSL, **C** CMD, **B** CMD de administrador.
 
-Si se cuelga, mantén el botón de encendido 10 s para volver a Android.
+1. **WSL:** kernel del CI en `out/kernel.macho` y payload con el táctil activo (`cepheusts=4`):
+   `bash scripts/make-cepheus-cust-payload.sh out/kernel.macho out/kernel.macho.adt.fixed out/cust-payload.img`, y copiarlo a `out\` en Windows.
+2. **Ventana A (WSL), antes de arrancar:** `sudo modprobe cdc_ether`, `sudo -v` y
+   `bash legacy/sweet-tools/sweet-usbnet.sh logs/liveN.txt`. Lo que el kernel imprime antes de que el PC tenga IP se pierde.
+3. **Ventana C (CMD), móvil en fastboot (Vol− + Encendido), dentro de `out\`:**
+   ```
+   fastboot flash cust cust-payload.img   # única escritura: partición cust
+   fastboot boot cepheus-xnu.img          # arranque temporal, no escribe en disco
+   ```
+4. **Ventana B (CMD de administrador), al salir `Booting OKAY`:** `usbipd list` (fila `1209:0001`) y
+   `usbipd bind --busid BUSID` (solo la primera vez) y `usbipd attach --wsl --busid BUSID --auto-attach`.
+5. **No toques el USB después** (ni `detach`, ni quitar el cable) hasta verificar el parche `0110`.
+
+Herramientas del PC, ya con red (`ping 192.168.7.2`): `scripts/phone-touch.py` (tocar iOS), `scripts/ts-console.py` y `scripts/ts-poll.py` (chip táctil).
+Si se cuelga, mantén el botón de encendido 10-15 s para apagarlo.
 
 ## Créditos
 
