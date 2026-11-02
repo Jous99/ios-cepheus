@@ -1,0 +1,63 @@
+diff --git a/bsd/dev/cepheus_gpu.c b/bsd/dev/cepheus_gpu.c
+index d341573..88846f7 100644
+--- a/bsd/dev/cepheus_gpu.c
++++ b/bsd/dev/cepheus_gpu.c
+@@ -3,7 +3,7 @@
+  * of the phone); the answers go to the live log as "CEPHEUS GPU:". No command here writes to any register.
+  *   g survey          state of the GPU clock branches in the GCC and, only if that is safe, of the gpucc
+  *   g r ADDR [N]      read N 32-bit words (default 1, at most 16) at the physical address ADDR (hex)
+- * Windows: GCC 0x100000..0x17ffff always; gpucc 0x2c90000..0x2c98fff only while gcc_gpu_cfg_ahb_clk is running (reading
++ * Windows: GCC 0x100000..0x1fffff always; gpucc 0x2c90000..0x2c98fff only while gcc_gpu_cfg_ahb_clk is running (reading
+  * it with that clock off would hang the bus). Nothing else is allowed yet. Offsets and bits come from the Linux
+  * drivers/clk/qcom/gcc-sm8150.c and gpucc-sm8150.c; the base of the gpucc is the one of cepheus.dts.
+  */
+@@ -17,7 +17,7 @@ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ void cepheus_gpu_console(const char *line);
+ 
+ #define GPU_GCC_PA      0x00100000u
+-#define GPU_GCC_SIZE    0x00080000u
++#define GPU_GCC_SIZE    0x00100000u
+ #define GPU_CC_PA       0x02c90000u
+ #define GPU_CC_SIZE     0x00009000u
+ #define GPU_CBCR_OFF    (1u << 31)          /* branch status: 1 = clock off */
+@@ -107,8 +107,12 @@ gpu_hex(const char *s, uint32_t *out)
+ }
+ 
+ static void
+-gpu_branch_line(const char *where, vm_offset_t base, const struct gpu_reg *r)
++gpu_branch_line(const char *where, vm_offset_t base, uint32_t size, const struct gpu_reg *r)
+ {
++	if (r->off + 4 > size) {        /* never read outside the mapped window (that is a kernel data abort) */
++		printf("CEPHEUS GPU: %s %#07x %-26s omitido: fuera de la ventana mapeada\n", where, r->off, r->name);
++		return;
++	}
+ 	uint32_t v = gpu_rd(base, r->off);
+ 	printf("CEPHEUS GPU: %s %#07x %-26s = %08x  %s (clk_off=%u enable=%u)\n", where, r->off, r->name, v,
+ 	    (v & GPU_CBCR_OFF) ? "APAGADO" : "ENCENDIDO", (v >> 31) & 1u, v & GPU_CBCR_EN);
+@@ -132,7 +136,7 @@ gpu_survey(void)
+ 	printf("CEPHEUS GPU: gcc   0x52004 votos de la gpu      = %08x  gpu_gpll0_clk_src(bit15)=%u gpu_gpll0_div(bit16)=%u\n", v,
+ 	    (v >> 15) & 1u, (v >> 16) & 1u);
+ 	for (unsigned i = 0; i < sizeof(gpu_gcc_br) / sizeof(gpu_gcc_br[0]); ++i) {
+-		gpu_branch_line("gcc  ", gpu_gcc, &gpu_gcc_br[i]);
++		gpu_branch_line("gcc  ", gpu_gcc, GPU_GCC_SIZE, &gpu_gcc_br[i]);
+ 	}
+ 	if (!gpu_cc_readable()) {
+ 		printf("CEPHEUS GPU: gpucc NO se lee: gcc_gpu_cfg_ahb_clk esta apagado (leerlo colgaria el bus)\n");
+@@ -142,7 +146,7 @@ gpu_survey(void)
+ 	gpu_gdsc_line("cx_gdsc", 0x106cu, 0x1540u, "hw_ctrl");
+ 	gpu_gdsc_line("gx_gdsc", 0x100cu, 0x1508u, "clamp_io");
+ 	for (unsigned i = 0; i < sizeof(gpu_cc_br) / sizeof(gpu_cc_br[0]); ++i) {
+-		gpu_branch_line("gpucc", gpu_cc, &gpu_cc_br[i]);
++		gpu_branch_line("gpucc", gpu_cc, GPU_CC_SIZE, &gpu_cc_br[i]);
+ 	}
+ 	printf("CEPHEUS GPU: gpucc 0x01120 gmu_clk_src cmd/cfg  = %08x / %08x  (cmd bit31 = raiz apagada)\n", gpu_rd(gpu_cc, 0x1120u),
+ 	    gpu_rd(gpu_cc, 0x1124u));
+@@ -190,7 +194,7 @@ gpu_read(const char *args)
+ 		uint32_t a = addr + 4 * i;
+ 		int w = gpu_window(a);
+ 		if (w == 0) {
+-			printf("CEPHEUS GPU: r %#09x: fuera de las ventanas permitidas (GCC 0x100000-0x17ffff, gpucc 0x2c90000-0x2c98fff)\n", a);
++			printf("CEPHEUS GPU: r %#09x: fuera de las ventanas permitidas (GCC 0x100000-0x1fffff, gpucc 0x2c90000-0x2c98fff)\n", a);
+ 			return;
+ 		}
+ 		if (w == 2 && !gpu_cc_readable()) {
