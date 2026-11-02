@@ -1,0 +1,198 @@
+diff --git a/bsd/dev/cepheus_ts.c b/bsd/dev/cepheus_ts.c
+index d346620..3d00ec0 100644
+--- a/bsd/dev/cepheus_ts.c
++++ b/bsd/dev/cepheus_ts.c
+@@ -50,15 +50,16 @@ void cepheus_ts_init(void);
+ #define TS_CBCR_HWCG    (1u << 1)            /* hwcg_bit of gcc_qupv3_wrap_2_s_ahb_clk */
+ #define TS_CBCR_OFF     (1u << 31)
+ #define TS_MAX          10u
+-#define TS_FIFO_READ    0x85u
+-#define TS_CMD_SENSE_ON 0x93u
++#define TS_FIFO_READ    0x86u           /* read all events (0x85, "read one", never returned anything here) */
++#define TS_CMD_SENSE_ON 0x93u           /* old protocol, does nothing on this IC; see ts_scan_on() */
+ #define TS_EV_NONE      0x00u
+-#define TS_EV_ENTER     0x03u
+-#define TS_EV_LEAVE     0x04u
+-#define TS_EV_MOTION    0x05u
+-#define TS_EV_ERROR     0x0fu
+-#define TS_EV_READY     0x10u
++#define TS_EV_ENTER     0x13u
++#define TS_EV_LEAVE     0x33u           /* assumed from the 0x13 / 0x23 / 0x33 pattern; not seen yet */
++#define TS_EV_MOTION    0x23u
++#define TS_EV_ERROR     0xf3u
++#define TS_EV_READY     0x03u           /* "controller ready", the only event left in the FIFO after a reset */
+ #define TS_EV_SIZE      8u
++#define TS_BURST        32u             /* four events per read */
+ 
+ #define SE_STATUS       0x040u
+ #define SE_MCLK         0x048u
+@@ -118,6 +119,7 @@ static struct {
+ } ts;
+ static int ts_sleep_chan;
+ static bool ts_ready;                       /* stage 1 done: supplies on, pins mapped (the console needs it) */
++static bool ts_rescan;                      /* the IC said "controller ready": it reset, scanning must be switched on again */
+ static bool ts_dir;                         /* false: SDA = gpio55, SCL = gpio56; true: swapped */
+ static const bool ts_use_geni = false;     /* SE17 has no FIFO interface; see the header comment */
+ 
+@@ -393,7 +395,7 @@ ts_msg(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx, unsigned nr, b
+  * Bit-banged I2C. The pull-ups are on the board, so a line is released by turning its output off (TLMM function 0,
+  * OE = 0) and driven low by turning the output on with the level latched at 0. About 100 kHz.
+  */
+-static unsigned ts_bb_us = 20u;            /* half bit, microseconds (console command "us") */
++static unsigned ts_bb_us = 10u;            /* half bit, microseconds (console command "us") */
+ #define TS_BB_US        ts_bb_us
+ #define TS_CFG_OE       0x200u
+ 
+@@ -676,7 +678,7 @@ ts_read(uint8_t cmd, uint8_t *buf, unsigned len)
+ 	return ts_msg(TS_ADDR, NULL, 0, buf, len, false);
+ }
+ 
+-static int
++static int __unused
+ ts_write_cmd(uint8_t cmd)
+ {
+ 	if (!ts_use_geni) {
+@@ -686,7 +688,7 @@ ts_write_cmd(uint8_t cmd)
+ }
+ 
+ /* FTS hardware register read: write B6 hi lo, then read n + 1 bytes (the first one is a dummy). */
+-static int
++static int __unused
+ ts_hwreg(uint16_t addr, uint8_t *out, unsigned n)
+ {
+ 	uint8_t cmd[3] = { 0xb6, (uint8_t)(addr >> 8), (uint8_t)addr };
+@@ -723,7 +725,7 @@ ts_pmic_scan(void)
+ }
+ 
+ /* Stage 3 experiments: which addresses ACK, then the system resets of the original driver and what follows them. */
+-static void
++static void __unused
+ ts_experiments(void)
+ {
+ 	uint32_t map[4] = { 0, 0, 0, 0 };
+@@ -844,11 +846,35 @@ ts_report(uint32_t mask, const int *x, const int *y)
+ 	ts.active = mask;
+ }
+ 
+-/* Empty the FTS event FIFO (0x85, one 8-byte event per read). Returns the read error, if any. */
++/* One 8-byte event. Touch events: type, finger in the low nibble of byte 1, x and y packed in bytes 2 to 4. */
++static void
++ts_parse_event(const uint8_t *ev, uint32_t *mask, int *x, int *y)
++{
++	unsigned id = ev[1] & 0x0fu;
++	if ((ev[0] == TS_EV_ENTER || ev[0] == TS_EV_MOTION) && id < TS_MAX) {
++		x[id] = (int)((((unsigned)ev[3] & 0x0fu) << 8) | ev[2]);
++		y[id] = (int)(((unsigned)ev[4] << 4) | (ev[3] >> 4));
++		*mask |= 1u << id;
++	} else if (ev[0] == TS_EV_LEAVE && id < TS_MAX) {
++		*mask &= ~(1u << id);
++	} else if (ev[0] == TS_EV_READY) {
++		ts_rescan = true;
++	}
++}
++
++/* The IC senses nothing until the scan mode is set: A0 00 FF, which it echoes back as the event 43 01 A0 00 FF. */
++static int
++ts_scan_on(void)
++{
++	static const uint8_t cmd[3] = { 0xa0, 0x00, 0xff };
++	return ts_bb_xfer(TS_ADDR, cmd, 3u, NULL, 0);
++}
++
++/* Empty the event FIFO (0x86, up to four 8-byte events per read). Returns the read error, if any. */
+ static int
+ ts_drain(bool log_all)
+ {
+-	static unsigned logged, raw;
++	static unsigned logged;
+ 	uint32_t mask = ts.active;
+ 	int x[TS_MAX], y[TS_MAX];
+ 	for (unsigned i = 0; i < TS_MAX; ++i) {
+@@ -856,31 +882,28 @@ ts_drain(bool log_all)
+ 		y[i] = ts.y[i];
+ 	}
+ 	int err = 0;
+-	for (unsigned n = 0; n < 32; ++n) {
+-		uint8_t ev[TS_EV_SIZE] = { 0 };
+-		err = ts_read(TS_FIFO_READ, ev, TS_EV_SIZE);
+-		if (raw < 8) {
+-			++raw;
+-			printf("CEPHEUS TS: raw read %u: %02x %02x %02x %02x %02x %02x %02x %02x err=%d irq=%u\n", raw, ev[0], ev[1],
+-			    ev[2], ev[3], ev[4], ev[5], ev[6], ev[7], err, ts_rd(ts_find(122)->va, 4) & 1u);
+-		}
+-		if (err || ev[0] == TS_EV_NONE) {
++	for (unsigned round = 0; round < 8; ++round) {
++		uint8_t buf[TS_BURST] = { 0 };
++		err = ts_read(TS_FIFO_READ, buf, sizeof(buf));
++		if (err) {
+ 			break;
+ 		}
+-		if (log_all || logged < 40 || ev[0] == TS_EV_ERROR) {
+-			if (logged < 400) {
+-				printf("CEPHEUS TS: event %02x %02x %02x %02x %02x %02x %02x %02x\n", ev[0], ev[1], ev[2],
+-				    ev[3], ev[4], ev[5], ev[6], ev[7]);
++		unsigned got = 0;
++		for (unsigned k = 0; k < sizeof(buf); k += TS_EV_SIZE) {
++			const uint8_t *ev = &buf[k];
++			if (ev[0] == TS_EV_NONE) {
++				break;
++			}
++			++got;
++			if ((log_all || logged < 40 || ev[0] == TS_EV_ERROR) && logged < 400) {
++				printf("CEPHEUS TS: event %02x %02x %02x %02x %02x %02x %02x %02x\n", ev[0], ev[1], ev[2], ev[3], ev[4],
++				    ev[5], ev[6], ev[7]);
+ 				++logged;
+ 			}
++			ts_parse_event(ev, &mask, x, y);
+ 		}
+-		unsigned id = ev[1] & 0x0fu;
+-		if ((ev[0] == TS_EV_ENTER || ev[0] == TS_EV_MOTION) && id < TS_MAX) {
+-			x[id] = (int)(((unsigned)ev[2] << 4) | (ev[4] >> 4));
+-			y[id] = (int)(((unsigned)ev[3] << 4) | (ev[4] & 0x0fu));
+-			mask |= 1u << id;
+-		} else if (ev[0] == TS_EV_LEAVE && id < TS_MAX) {
+-			mask &= ~(1u << id);
++		if (got < TS_BURST / TS_EV_SIZE) {
++			break;                  /* the FIFO is empty */
+ 		}
+ 	}
+ 	if (ts.stage >= 4) {
+@@ -1149,15 +1172,6 @@ ts_thread(void *arg, wait_result_t result)
+ 		}
+ 		printf("CEPHEUS TS: 0x49 answers with sda=gpio%u scl=gpio%u\n", dir ? 56u : 55u, dir ? 55u : 56u);
+ 		(void)ts_bb_init(dir != 0);
+-		uint8_t id[2] = { 0 }, fwv[2] = { 0 };
+-		int e1 = ts_hwreg(0x0004, id, 2);
+-		int e2 = ts_hwreg(0x0008, fwv, 2);
+-		printf("CEPHEUS TS: chip id %02x%02x (err %d; 3670 expected) fw version %02x%02x (err %d)\n", id[0], id[1], e1,
+-		    fwv[0], fwv[1], e2);
+-		uint8_t id3[2] = { 0 };
+-		int e3 = ts_hwreg(0x0007, id3, 2);
+-		printf("CEPHEUS TS: chip id at 0x0007 %02x%02x (err %d; 396c on the FTM3 variant)\n", id3[0], id3[1], e3);
+-		ts_experiments();
+ 	}
+ 	for (unsigned i = 0; i < 75 && !ts.dead; ++i) {
+ 		int err = ts_drain(true);
+@@ -1172,8 +1186,9 @@ ts_thread(void *arg, wait_result_t result)
+ 	}
+ 
+ 	/* Stage 4: sense on and report touches. */
+-	int cerr = ts_write_cmd(TS_CMD_SENSE_ON);
+-	printf("CEPHEUS TS: sense on err=%d; polling\n", cerr);
++	int cerr = ts_scan_on();
++	ts_rescan = false;
++	printf("CEPHEUS TS: scan mode on err=%d; polling\n", cerr);
+ 	unsigned ticks = 0, polls = 0, lows = 0, shown = 0;
+ 	errors = 0;
+ 	while (!ts.dead) {
+@@ -1185,6 +1200,10 @@ ts_thread(void *arg, wait_result_t result)
+ 			printf("CEPHEUS TS: poll status: irq low in %u of the last 500 polls\n", lows);
+ 			lows = 0;
+ 		}
++		if (ts_rescan) {
++			ts_rescan = false;
++			printf("CEPHEUS TS: the IC reset (controller ready), scan mode on again: err=%d\n", ts_scan_on());
++		}
+ 		if (irq_low || ts.active || (++ticks % 50u) == 0) {
+ 			int err = ts_drain(false);
+ 			if (err) {
