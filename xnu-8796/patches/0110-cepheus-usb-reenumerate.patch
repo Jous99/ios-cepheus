@@ -1,0 +1,50 @@
+diff --git a/bsd/dev/cepheus_usb.c b/bsd/dev/cepheus_usb.c
+index d85180b..0eb9987 100644
+--- a/bsd/dev/cepheus_usb.c
++++ b/bsd/dev/cepheus_usb.c
+@@ -498,6 +498,9 @@ ud_rx_arm(void)
+ static void
+ ud_rx_done(void)
+ {
++	if (!ud.configured) {           /* a transfer that the bus reset cut short */
++		return;
++	}
+ 	volatile uint32_t *t = (volatile uint32_t *)(ud.dma + UD_TRB_RX);
+ 	ud_sync(UD_TRB_RX, 16);
+ 	uint32_t len = UD_FRAME_MAX - (t[2] & 0xffffff);
+@@ -704,12 +707,27 @@ ud_if_create(void)
+ 	printf("CEPHEUS USB: ue0 192.168.7.2/24 %s (err %d)\n", err ? "NOT configured" : "up", err);
+ }
+ 
++/*
++ * A USB reset or a disconnect wipes the data endpoints of the controller. Forget that they were configured, so that the
++ * next SET_CONFIGURATION programs them again. Before this, a host that re-enumerated the device (a detach and attach
++ * of usbipd, a cable replug) saw it and registered the network interface, but no frame ever flowed again.
++ */
++static void
++ud_bus_gone(void)
++{
++	lck_mtx_lock(ud.lock);
++	ud.configured = false;
++	ud.tx_busy = false;
++	lck_mtx_unlock(ud.lock);
++}
++
+ static void
+ ud_event(uint32_t ev)
+ {
+ 	if (ev & 1) {                   /* device event */
+ 		uint32_t type = (ev >> 8) & 0xf;
+ 		if (type == 1) {        /* USB reset */
++			ud_bus_gone();
+ 			dwc_wr(DCFG, dwc_rd(DCFG) & ~(0x7fu << 3));
+ 			printf("CEPHEUS USB: bus reset\n");
+ 		} else if (type == 2) { /* connect done */
+@@ -721,6 +739,7 @@ ud_event(uint32_t ev)
+ 			    (1u << 8) | (1u << 10) | (1u << 25), 0);
+ 			printf("CEPHEUS USB: connected, speed %u\n", speed);
+ 		} else if (type == 0) {
++			ud_bus_gone();
+ 			printf("CEPHEUS USB: disconnect\n");
+ 		}
+ 		return;
