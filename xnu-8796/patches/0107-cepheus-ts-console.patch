@@ -1,0 +1,250 @@
+diff --git a/bsd/dev/cepheus_ts.c b/bsd/dev/cepheus_ts.c
+index 171e725..d346620 100644
+--- a/bsd/dev/cepheus_ts.c
++++ b/bsd/dev/cepheus_ts.c
+@@ -117,6 +117,8 @@ static struct {
+ 	int x[TS_MAX], y[TS_MAX];
+ } ts;
+ static int ts_sleep_chan;
++static bool ts_ready;                       /* stage 1 done: supplies on, pins mapped (the console needs it) */
++static bool ts_dir;                         /* false: SDA = gpio55, SCL = gpio56; true: swapped */
+ static const bool ts_use_geni = false;     /* SE17 has no FIFO interface; see the header comment */
+ 
+ static uint32_t
+@@ -391,7 +393,8 @@ ts_msg(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx, unsigned nr, b
+  * Bit-banged I2C. The pull-ups are on the board, so a line is released by turning its output off (TLMM function 0,
+  * OE = 0) and driven low by turning the output on with the level latched at 0. About 100 kHz.
+  */
+-#define TS_BB_US        20u
++static unsigned ts_bb_us = 20u;            /* half bit, microseconds (console command "us") */
++#define TS_BB_US        ts_bb_us
+ #define TS_CFG_OE       0x200u
+ 
+ static vm_offset_t ts_sda_va, ts_scl_va;
+@@ -701,7 +704,7 @@ ts_hwreg(uint16_t addr, uint8_t *out, unsigned n)
+ }
+ 
+ /* Read only: type, status and enable of the PM8150L (SID 4) regulator blocks, to see whether avdd (ldoc1) is really on. */
+-static void
++static void __unused
+ ts_pmic_scan(void)
+ {
+ 	int init = cepheus_spmi_init();
+@@ -886,6 +889,187 @@ ts_drain(bool log_all)
+ 	return err;
+ }
+ 
++/*
++ * Debug console for the IC, driven from the PC over UDP (cepheus_usb.c hands over the lines that start with "t ").
++ * Boot with cepheusts=1: stage 1 powers the IC and maps the pins, then these commands work. Output goes to the live
++ * log as "CEPHEUS TSC:". scripts/ts-console.py sends them and prints the answers.
++ *   t scan               which 7-bit addresses ACK
++ *   t x HEX [N]          write the hex bytes ("-" for none), then read N bytes after a repeated START
++ *   t rst LOW HIGH       reset low for LOW ms, then high, then wait HIGH ms
++ *   t irq                IRQ level, and how many of 50 samples (1 ms apart) were low
++ *   t us N               half bit time in microseconds (default 20)
++ *   t dir 0|1            SDA/SCL as gpio55/gpio56 (0) or swapped (1)
++ *   t fifo MS            read the event FIFO (0x85) for MS ms and print every event that is not empty
++ */
++static int
++ts_hexval(char c)
++{
++	if (c >= '0' && c <= '9') {
++		return c - '0';
++	}
++	if (c >= 'a' && c <= 'f') {
++		return c - 'a' + 10;
++	}
++	if (c >= 'A' && c <= 'F') {
++		return c - 'A' + 10;
++	}
++	return -1;
++}
++
++/* "b60004" -> bytes; "-" is empty. Returns the byte count or -1. */
++static int
++ts_hex(const char *s, uint8_t *out, unsigned max)
++{
++	unsigned n = 0;
++	if (s[0] == '-' && s[1] == 0) {
++		return 0;
++	}
++	while (s[0] && s[1] && n < max) {
++		int hi = ts_hexval(s[0]), lo = ts_hexval(s[1]);
++		if (hi < 0 || lo < 0) {
++			return -1;
++		}
++		out[n++] = (uint8_t)((hi << 4) | lo);
++		s += 2;
++	}
++	return *s ? -1 : (int)n;
++}
++
++static bool
++ts_tok(const char **p, char *out, unsigned max)
++{
++	const char *s = *p;
++	unsigned n = 0;
++	while (*s == ' ') {
++		++s;
++	}
++	if (!*s) {
++		return false;
++	}
++	while (*s && *s != ' ' && n + 1 < max) {
++		out[n++] = *s++;
++	}
++	out[n] = 0;
++	*p = s;
++	return true;
++}
++
++static unsigned
++ts_dec(const char **p, unsigned dflt)
++{
++	char t[12];
++	unsigned v = 0;
++	if (!ts_tok(p, t, sizeof(t))) {
++		return dflt;
++	}
++	for (unsigned i = 0; t[i] >= '0' && t[i] <= '9' && v < 1000000; ++i) {
++		v = v * 10 + (unsigned)(t[i] - '0');
++	}
++	return v;
++}
++
++static void
++ts_hexstr(char *dst, unsigned dmax, const uint8_t *src, unsigned n)
++{
++	static const char d[] = "0123456789abcdef";
++	unsigned o = 0;
++	for (unsigned i = 0; i < n && o + 3 < dmax; ++i) {
++		dst[o++] = d[src[i] >> 4];
++		dst[o++] = d[src[i] & 15u];
++		dst[o++] = ' ';
++	}
++	dst[o] = 0;
++}
++
++static unsigned
++ts_irq_level(void)
++{
++	return ts_rd(ts_find(122)->va, 4) & 1u;
++}
++
++void
++cepheus_ts_console(const char *line)
++{
++	char cmd[8], a1[40], hex[120];
++	const char *p = line;
++	uint8_t tx[16], rx[32];
++
++	if (!ts_ready) {
++		printf("CEPHEUS TSC: not ready (boot with cepheusts=1 and wait for stage 1)\n");
++		return;
++	}
++	if (!ts_tok(&p, cmd, sizeof(cmd))) {
++		return;
++	}
++	(void)ts_bb_init(ts_dir);
++	if (!strcmp(cmd, "scan")) {
++		uint32_t map[4] = { 0, 0, 0, 0 };
++		for (unsigned a = 0x03; a <= 0x77; ++a) {
++			if (ts_bb_xfer((uint8_t)a, NULL, 0, NULL, 0) == 0) {
++				map[a >> 5] |= 1u << (a & 31u);
++			}
++		}
++		printf("CEPHEUS TSC: scan %08x %08x %08x %08x (bit = 7-bit address; 0x49 is bit 9 of the second)\n", map[3], map[2],
++		    map[1], map[0]);
++	} else if (!strcmp(cmd, "x")) {
++		if (!ts_tok(&p, a1, sizeof(a1))) {
++			printf("CEPHEUS TSC: x needs HEX [N]\n");
++			return;
++		}
++		int nt = ts_hex(a1, tx, sizeof(tx));
++		unsigned nr = ts_dec(&p, 0);
++		if (nt < 0 || nr > sizeof(rx)) {
++			printf("CEPHEUS TSC: x: bad hex or N > %u\n", (unsigned)sizeof(rx));
++			return;
++		}
++		int err = ts_bb_xfer(TS_ADDR, tx, (unsigned)nt, rx, nr);
++		ts_hexstr(hex, sizeof(hex), rx, err ? 0 : nr);
++		printf("CEPHEUS TSC: x tx=%s n=%u err=%d irq=%u rx: %s\n", a1, nr, err, ts_irq_level(), hex);
++	} else if (!strcmp(cmd, "rst")) {
++		unsigned low = ts_dec(&p, 20), high = ts_dec(&p, 300);
++		(void)ts_gpio(12, 0, 3, 3, true, false);
++		ts_wait(low);
++		(void)ts_gpio(12, 0, 3, 3, true, true);
++		ts_wait(high);
++		printf("CEPHEUS TSC: rst low %u ms, high %u ms: irq=%u\n", low, high, ts_irq_level());
++	} else if (!strcmp(cmd, "irq")) {
++		unsigned lows = 0;
++		for (unsigned i = 0; i < 50; ++i) {
++			lows += ts_irq_level() ? 0u : 1u;
++			delay(1000);
++		}
++		printf("CEPHEUS TSC: irq level %u, low in %u of 50 samples\n", ts_irq_level(), lows);
++	} else if (!strcmp(cmd, "us")) {
++		unsigned us = ts_dec(&p, 20);
++		ts_bb_us = us < 1 ? 1 : (us > 500 ? 500 : us);
++		printf("CEPHEUS TSC: half bit %u us\n", ts_bb_us);
++	} else if (!strcmp(cmd, "dir")) {
++		ts_dir = ts_dec(&p, 0) != 0;
++		(void)ts_bb_init(ts_dir);
++		printf("CEPHEUS TSC: sda=gpio%u scl=gpio%u\n", ts_dir ? 56u : 55u, ts_dir ? 55u : 56u);
++	} else if (!strcmp(cmd, "fifo")) {
++		unsigned ms = ts_dec(&p, 1000), reads = 0, shown = 0, lows = 0;
++		if (ms > 20000) {
++			ms = 20000;
++		}
++		for (unsigned t = 0; t < ms; t += 5) {
++			uint8_t ev[TS_EV_SIZE] = { 0 };
++			lows += ts_irq_level() ? 0u : 1u;
++			int err = ts_read(TS_FIFO_READ, ev, TS_EV_SIZE);
++			++reads;
++			if ((err || ev[0] != 0) && shown < 40) {
++				++shown;
++				ts_hexstr(hex, sizeof(hex), ev, TS_EV_SIZE);
++				printf("CEPHEUS TSC: fifo t=%u err=%d irq=%u: %s\n", t, err, ts_irq_level(), hex);
++			}
++			ts_wait(5);
++		}
++		printf("CEPHEUS TSC: fifo done: %u reads, %u events shown, irq low in %u\n", reads, shown, lows);
++	} else {
++		printf("CEPHEUS TSC: commands: scan | x HEX [N] | rst LOW HIGH | irq | us N | dir 0|1 | fifo MS\n");
++	}
++}
++
+ static void
+ ts_thread(void *arg, wait_result_t result)
+ {
+@@ -921,7 +1105,7 @@ ts_thread(void *arg, wait_result_t result)
+ 	ok = ts_gpio(55, ts_use_geni ? 1 : 0, 0, 0, false, false) && ok;    /* SDA: qup17 or plain GPIO, 2 mA, no bias */
+ 	ok = ts_gpio(56, ts_use_geni ? 1 : 0, 0, 0, false, false) && ok;    /* SCL */
+ 	ts_dump_pins("after");
+-	ts_pmic_scan();
++	ts_ready = ok && !perr;
+ 	printf("CEPHEUS TS: stage 1 %s\n", (ok && !perr) ? "complete" : "INCOMPLETE");
+ 	if (ts.stage < 2 || !ok || perr) {
+ 		goto out;
+diff --git a/bsd/dev/cepheus_usb.c b/bsd/dev/cepheus_usb.c
+index 244445f..8b559b5 100644
+--- a/bsd/dev/cepheus_usb.c
++++ b/bsd/dev/cepheus_usb.c
+@@ -856,6 +856,7 @@ ud_log_thread(void *arg __unused, wait_result_t wr __unused)
+  * Boot-arg cepheusudpinput=0 disables it.
+  */
+ extern void cepheus_hid_touch(int finger, int down, int x, int y);
++extern void cepheus_ts_console(const char *line);
+ 
+ static const char *
+ ud_in_int(const char *p, int *out)
+@@ -897,6 +898,8 @@ ud_in_command(const char *line)
+ 		if (ud_in_int(line + 1, &f) && f >= 0 && f < 10) {
+ 			cepheus_hid_touch(f, 0, last_x[f], last_y[f]);
+ 		}
++	} else if (line[0] == 't' && line[1] == ' ') {
++		cepheus_ts_console(line + 2);          /* touch IC debug console (cepheus_ts.c) */
+ 	}
+ }
+ 
