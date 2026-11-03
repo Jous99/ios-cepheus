@@ -63,7 +63,7 @@ Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 
 ### Fase 4: Extras
 - [x] USB ECM para leer logs por red
-- [ ] Verificar el parche `0110`: la red debe volver tras reenumerar el USB (`usbipd detach` y `attach`)
+- [x] `0110` verificado (02/11): tras `usbipd detach`/`attach` el dispositivo reenumera y la red vuelve (hay que volver a poner la IP si no la pone `sweet-usbnet.sh`)
 - [ ] Fecha y hora (iOS arranca el 31 de diciembre: no hay RTC)
 - [ ] Red de iOS por el cable USB (hoy solo la usa el log)
 - [ ] Panel en modo comando (sin DSC)
@@ -114,7 +114,7 @@ Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 - Cable USB malo: la imagen de 96 MB da `Load Error`.
 - `fastboot` de Windows corrompe imágenes sparse a partir de 4 GiB: trocear con `simg2simg` y flashear con `scripts/flash-pieces.py`.
 - El log en vivo solo recoge lo que se imprime con el PC ya con IP: arranca `sweet-usbnet.sh` antes de `fastboot boot`.
-- El driver USB heredado perdía la red al reenumerar el dispositivo (cualquier `usbipd detach`/`attach`); arreglo `0110`, sin verificar.
+- El driver USB heredado perdía la red al reenumerar el dispositivo (cualquier `usbipd detach`/`attach`); arreglo `0110`, verificado.
 - El SE17 del táctil es solo GPI-DMA (`GENI_IF_DISABLE_RO` queda en 1): el I²C va por GPIO.
 - Una lectura de registro fuera de la ventana mapeada es un fallo de acceso del kernel (panic): comprueba el offset contra el tamaño.
 
@@ -133,7 +133,7 @@ Solo se escribe en `cust` (kernel y configuración); `userdata`, con iOS, no se 
    ```
 4. **Ventana B (CMD de administrador), al salir `Booting OKAY`:** `usbipd list` (fila `1209:0001`) y
    `usbipd bind --busid BUSID` (solo la primera vez) y `usbipd attach --wsl --busid BUSID --auto-attach`.
-5. **No toques el USB después** (ni `detach`, ni quitar el cable) hasta verificar el parche `0110`.
+5. Si la red se cae, `usbipd detach` y `attach` la recuperan (parche `0110`); tras reenumerar, pon la IP: `sudo ip addr add 192.168.7.1/24 dev enx02005e77ee01`.
 
 Herramientas del PC, ya con red (`ping 192.168.7.2`): `scripts/phone-touch.py` (tocar iOS), `scripts/ts-console.py` y `scripts/ts-poll.py` (chip táctil).
 Si se cuelga, mantén el botón de encendido 10-15 s para apagarlo.
