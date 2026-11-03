@@ -1,0 +1,234 @@
+diff --git a/bsd/dev/cepheus_gpu.c b/bsd/dev/cepheus_gpu.c
+index ce16c5e..1c67c34 100644
+--- a/bsd/dev/cepheus_gpu.c
++++ b/bsd/dev/cepheus_gpu.c
+@@ -1,9 +1,10 @@
+ /*
+- * Adreno 640 bring-up console, gates G0 and G1. Lines that start with "g " arrive from cepheus_usb.c (UDP port 5141
++ * Adreno 640 bring-up console, gates G0, G1 and G2a. Lines that start with "g " arrive from cepheus_usb.c (UDP port 5141
+  * of the phone); the answers go to the live log as "CEPHEUS GPU:". The only writes are those of "g g1", through a
+  * closed list of registers (gpu_wr_cc / gpu_wr_gcc); everything else is read only.
+  *   g survey          state of the GPU clock branches in the GCC and, only if that is safe, of the gpucc
+  *   g g1              G1: power the CX domain and the GMU clocks, then read the GMU
++ *   g smmu [map|cb N] G2a: read only inventory of the GPU SMMU (needs g g1 first), in steps
+  *   g r ADDR [N]      read N 32-bit words (default 1, at most 16) at the physical address ADDR (hex)
+  * Windows: GCC 0x100000..0x1fffff always; gpucc 0x2c90000..0x2c98fff only while gcc_gpu_cfg_ahb_clk is running (reading
+  * it with that clock off would hang the bus); the GMU 0x2c6a000..0x2c8ffff only once G1 has left it readable. Offsets and bits come from the Linux
+@@ -27,6 +28,8 @@ void cepheus_gpu_console(const char *line);
+ #define GPU_GMU_MAP_SIZE 0x00028000u
+ #define GPU_GMU_PA      0x02c6a000u         /* the GMU registers; they end where the gpucc begins */
+ #define GPU_GMU_SIZE    0x00026000u
++#define GPU_SMMU_PA     0x02ca0000u         /* kgsl-smmu (ARM MMU-500) */
++#define GPU_SMMU_SIZE   0x00010000u
+ #define GPU_CBCR_OFF    (1u << 31)          /* branch status: 1 = clock off */
+ #define GPU_CBCR_EN     (1u << 0)
+ #define GPU_GDSC_PWR_ON (1u << 31)          /* GDSCR status: 1 = domain powered */
+@@ -58,7 +61,7 @@ static const struct gpu_reg gpu_cc_br[] = {
+ 	{ "gpu_cc_gx_gmu_clk", 0x1064u },
+ };
+ 
+-static vm_offset_t gpu_gcc, gpu_cc, gpu_gmu;
++static vm_offset_t gpu_gcc, gpu_cc, gpu_gmu, gpu_smmu;
+ 
+ static bool
+ gpu_map(void)
+@@ -73,7 +76,10 @@ gpu_map(void)
+ 		vm_offset_t m = ml_io_map(GPU_GMU_MAP_PA, GPU_GMU_MAP_SIZE);
+ 		gpu_gmu = m ? m + (GPU_GMU_PA - GPU_GMU_MAP_PA) : 0;
+ 	}
+-	return gpu_gcc != 0 && gpu_cc != 0 && gpu_gmu != 0;
++	if (!gpu_smmu) {
++		gpu_smmu = ml_io_map(GPU_SMMU_PA, GPU_SMMU_SIZE);
++	}
++	return gpu_gcc != 0 && gpu_cc != 0 && gpu_gmu != 0 && gpu_smmu != 0;
+ }
+ 
+ static uint32_t
+@@ -331,7 +337,138 @@ gpu_g1(void)
+ 	printf("CEPHEUS GPU: === G1 superada ===\n");
+ }
+ 
+-/* Which window an address belongs to: 1 = GCC, 2 = gpucc, 3 = GMU, 0 = none. */
++/*
++ * G2a: read only inventory of the GPU SMMU, in steps so that a protected register shows where it is (the log names what
++ * is about to be read before reading it). Field positions come from Linux arm-smmu.h; the context banks start at page
++ * (1 << (NUMPAGENDXB + 1)) of the SMMU, global registers 0 and 1 are pages 0 and 1.
++ */
++struct gpu_smmu_geo {
++	unsigned numsmrg, numcb, pgshift, numpage;
++};
++
++static uint32_t
++gpu_srd(uint32_t off)
++{
++	return gpu_rd(gpu_smmu, off);
++}
++
++static bool
++gpu_smmu_ok(void)
++{
++	if (!gpu_gmu_readable()) {
++		printf("CEPHEUS GPU: smmu: el dominio CX esta apagado (ejecuta g g1 antes)\n");
++		return false;
++	}
++	return true;
++}
++
++static bool
++gpu_smmu_geo(struct gpu_smmu_geo *g)
++{
++	uint32_t id0 = gpu_srd(0x20u), id1 = gpu_srd(0x24u);
++	if (id0 == 0 || id0 == 0xffffffffu || id1 == 0 || id1 == 0xffffffffu) {
++		printf("CEPHEUS GPU: smmu: IDR0 = %08x, IDR1 = %08x no son validos: no se sigue\n", id0, id1);
++		return false;
++	}
++	g->numsmrg = id0 & 0xffu;
++	g->numcb = id1 & 0xffu;
++	g->pgshift = (id1 & (1u << 31)) ? 16u : 12u;
++	g->numpage = 1u << (((id1 >> 28) & 7u) + 1);
++	return true;
++}
++
++static void
++gpu_smmu_global(void)
++{
++	static const unsigned bits[8] = { 32, 36, 40, 42, 44, 48, 48, 48 };
++	struct gpu_smmu_geo g;
++	if (!gpu_smmu_ok()) {
++		return;
++	}
++	printf("CEPHEUS GPU: === G2a: SMMU de la GPU (0x2ca0000), registros globales ===\n");
++	printf("CEPHEUS GPU: smmu: leyendo IDR0 (0x20)\n");
++	if (!gpu_smmu_geo(&g)) {
++		return;
++	}
++	uint32_t id0 = gpu_srd(0x20u), id1 = gpu_srd(0x24u), id2 = gpu_srd(0x28u), id7 = gpu_srd(0x3cu);
++	printf("CEPHEUS GPU: smmu IDR0 = %08x  NUMSMRG=%u S1TS=%u S2TS=%u NTS=%u SMS=%u CTTW=%u\n", id0, g.numsmrg, (id0 >> 30) & 1u,
++	    (id0 >> 29) & 1u, (id0 >> 28) & 1u, (id0 >> 27) & 1u, (id0 >> 14) & 1u);
++	printf("CEPHEUS GPU: smmu IDR1 = %08x  NUMCB=%u paginas de %u KiB, NUMPAGENDXB=%u (bancos desde la pagina %u)\n", id1, g.numcb,
++	    1u << (g.pgshift - 10), (id1 >> 28) & 7u, g.numpage);
++	printf("CEPHEUS GPU: smmu IDR2 = %08x  IAS=%u bits OAS=%u bits PTFS 4K=%u 16K=%u 64K=%u\n", id2, bits[id2 & 7u], bits[(id2 >> 4) & 7u],
++	    (id2 >> 12) & 1u, (id2 >> 13) & 1u, (id2 >> 14) & 1u);
++	printf("CEPHEUS GPU: smmu IDR7 = %08x  version %u.%u\n", id7, (id7 >> 4) & 0xfu, id7 & 0xfu);
++	printf("CEPHEUS GPU: smmu sCR0 = %08x  sACR = %08x  sGFSR = %08x  sGFSYNR0 = %08x\n", gpu_srd(0x0u), gpu_srd(0x10u), gpu_srd(0x48u),
++	    gpu_srd(0x50u));
++	printf("CEPHEUS GPU: smmu: siguiente paso: g smmu map (SMR y S2CR), luego g smmu cb 0, 1, 2...\n");
++}
++
++static void
++gpu_smmu_map(void)
++{
++	struct gpu_smmu_geo g;
++	if (!gpu_smmu_ok() || !gpu_smmu_geo(&g)) {
++		return;
++	}
++	unsigned n = g.numsmrg > 48 ? 48 : g.numsmrg;
++	printf("CEPHEUS GPU: === smmu: %u grupos de stream (se muestran %u): smr / s2cr ===\n", g.numsmrg, n);
++	for (unsigned i = 0; i < n; i += 2) {
++		if (i + 1 < n) {
++			printf("CEPHEUS GPU: smr[%02u]=%08x s2cr=%08x | smr[%02u]=%08x s2cr=%08x\n", i, gpu_srd(0x800u + 4 * i), gpu_srd(0xc00u + 4 * i),
++			    i + 1, gpu_srd(0x800u + 4 * (i + 1)), gpu_srd(0xc00u + 4 * (i + 1)));
++		} else {
++			printf("CEPHEUS GPU: smr[%02u]=%08x s2cr=%08x\n", i, gpu_srd(0x800u + 4 * i), gpu_srd(0xc00u + 4 * i));
++		}
++	}
++}
++
++static void
++gpu_smmu_cb(const char *args)
++{
++	struct gpu_smmu_geo g;
++	uint32_t n;
++	if (!gpu_smmu_ok()) {
++		return;
++	}
++	while (*args == ' ') {
++		++args;
++	}
++	if (!gpu_hex(args, &n)) {
++		printf("CEPHEUS GPU: smmu cb: indica el numero del banco (por ejemplo: g smmu cb 0)\n");
++		return;
++	}
++	if (!gpu_smmu_geo(&g)) {
++		return;
++	}
++	uint32_t cb = (g.numpage + n) << g.pgshift, gr1 = 1u << g.pgshift;
++	if (n >= g.numcb || cb + 0x5cu > GPU_SMMU_SIZE || gr1 + 0x800u + 4 * n + 4 > GPU_SMMU_SIZE) {
++		printf("CEPHEUS GPU: smmu cb %u: no existe (NUMCB=%u) o cae fuera de la ventana\n", n, g.numcb);
++		return;
++	}
++	printf("CEPHEUS GPU: smmu: leyendo el banco %u (pagina %#x, GR1 %#x)\n", n, cb, gr1);
++	printf("CEPHEUS GPU: cb%u CBAR = %08x  CBA2R = %08x\n", n, gpu_srd(gr1 + 4 * n), gpu_srd(gr1 + 0x800u + 4 * n));
++	printf("CEPHEUS GPU: cb%u SCTLR = %08x  TCR = %08x  TCR2 = %08x  TTBR0 = %08x_%08x  MAIR0 = %08x  FSR = %08x\n", n, gpu_srd(cb),
++	    gpu_srd(cb + 0x30u), gpu_srd(cb + 0x10u), gpu_srd(cb + 0x24u), gpu_srd(cb + 0x20u), gpu_srd(cb + 0x38u), gpu_srd(cb + 0x58u));
++}
++
++static void
++gpu_smmu_cmd(const char *a)
++{
++	while (*a == ' ') {
++		++a;
++	}
++	if (*a == 0) {
++		gpu_smmu_global();
++	} else if (!strncmp(a, "map", 3) && (a[3] == 0 || a[3] == ' ')) {
++		gpu_smmu_map();
++	} else if (!strncmp(a, "cb", 2) && (a[2] == 0 || a[2] == ' ')) {
++		gpu_smmu_cb(a + 2);
++	} else {
++		printf("CEPHEUS GPU: smmu: g smmu | g smmu map | g smmu cb N\n");
++	}
++}
++
++/* Which window an address belongs to: 1 = GCC, 2 = gpucc, 3 = GMU, 4 = SMMU, 0 = none. */
+ static int
+ gpu_window(uint32_t a)
+ {
+@@ -344,6 +481,9 @@ gpu_window(uint32_t a)
+ 	if (a >= GPU_GMU_PA && a + 4 <= GPU_GMU_PA + GPU_GMU_SIZE) {
+ 		return 3;
+ 	}
++	if (a >= GPU_SMMU_PA && a + 4 <= GPU_SMMU_PA + GPU_SMMU_SIZE) {
++		return 4;
++	}
+ 	return 0;
+ }
+ 
+@@ -375,7 +515,7 @@ gpu_read(const char *args)
+ 		uint32_t a = addr + 4 * i;
+ 		int w = gpu_window(a);
+ 		if (w == 0) {
+-			printf("CEPHEUS GPU: r %#09x: fuera de las ventanas permitidas (GCC 0x100000-0x1fffff, gpucc 0x2c90000-0x2c98fff, GMU 0x2c6a000-0x2c8ffff)\n", a);
++			printf("CEPHEUS GPU: r %#09x: fuera de las ventanas permitidas (GCC 0x100000-0x1fffff, gpucc 0x2c90000-0x2c98fff, GMU 0x2c6a000-0x2c8ffff, SMMU 0x2ca0000-0x2caffff)\n", a);
+ 			return;
+ 		}
+ 		if (w == 2 && !gpu_cc_readable()) {
+@@ -386,7 +526,13 @@ gpu_read(const char *args)
+ 			printf("CEPHEUS GPU: r %#09x: el GMU no se puede leer ahora (falta ejecutar g g1)\n", a);
+ 			return;
+ 		}
+-		uint32_t v = w == 1 ? gpu_rd(gpu_gcc, a - GPU_GCC_PA) : w == 2 ? gpu_rd(gpu_cc, a - GPU_CC_PA) : gpu_rd(gpu_gmu, a - GPU_GMU_PA);
++		if (w == 4 && !gpu_gmu_readable()) {
++			printf("CEPHEUS GPU: r %#09x: la SMMU no se puede leer ahora (falta ejecutar g g1)\n", a);
++			return;
++		}
++		uint32_t v = w == 1 ? gpu_rd(gpu_gcc, a - GPU_GCC_PA) :
++		    w == 2 ? gpu_rd(gpu_cc, a - GPU_CC_PA) :
++		    w == 3 ? gpu_rd(gpu_gmu, a - GPU_GMU_PA) : gpu_rd(gpu_smmu, a - GPU_SMMU_PA);
+ 		printf("CEPHEUS GPU: r %#09x = %08x\n", a, v);
+ 	}
+ }
+@@ -405,10 +551,12 @@ cepheus_gpu_console(const char *line)
+ 		gpu_survey();
+ 	} else if (!strncmp(line, "g1", 2) && (line[2] == 0 || line[2] == ' ')) {
+ 		gpu_g1();
++	} else if (!strncmp(line, "smmu", 4) && (line[4] == 0 || line[4] == ' ')) {
++		gpu_smmu_cmd(line + 4);
+ 	} else if (line[0] == 'r' && (line[1] == 0 || line[1] == ' ')) {
+ 		gpu_read(line + 1);
+ 	} else {
+-		printf("CEPHEUS GPU: comandos: survey | g1 | r ADDR [N]\n");
++		printf("CEPHEUS GPU: comandos: survey | g1 | smmu [map|cb N] | r ADDR [N]\n");
+ 	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_CEPHEUS */
