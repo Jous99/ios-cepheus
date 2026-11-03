@@ -73,7 +73,7 @@ Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 - [x] Firmware identificado: `a630_sqe.fw`, `a640_gmu.bin` y `sm8150/a640_zap.mbn` (linux-firmware, redistribuibles; no se suben a git)
 - [x] Mapa de relojes y dominios: gpucc `0x2c90000`, GDSC CX `0x106c`, GX `0x100c`
 - [x] Consola de registros de solo lectura por UDP (`0109`)
-- [ ] Verificar `0111`: el primer `survey` hizo kernel panic por leer un offset fuera de la ventana del GCC
+- [x] `0111` verificado (02/11): el `survey` completo ya no hace panic; la GPU está apagada (inventario G0 en `ios-cepheus-gpu`)
 - [ ] G1 relojes del gpucc y dominio CX; G2 firmware del GMU; G3 HFI y GX; G4 SQE y zap (TrustZone); G5 orden mínima
 - [ ] Que iOS use esa GPU: sin garantía (AdrenoMetal está atado al ABI de iPadOS 17.7.11)
 
