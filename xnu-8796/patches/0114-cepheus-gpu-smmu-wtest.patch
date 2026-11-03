@@ -1,0 +1,116 @@
+diff --git a/bsd/dev/cepheus_gpu.c b/bsd/dev/cepheus_gpu.c
+index 1c67c34..809296f 100644
+--- a/bsd/dev/cepheus_gpu.c
++++ b/bsd/dev/cepheus_gpu.c
+@@ -1,10 +1,11 @@
+ /*
+- * Adreno 640 bring-up console, gates G0, G1 and G2a. Lines that start with "g " arrive from cepheus_usb.c (UDP port 5141
++ * Adreno 640 bring-up console, gates G0, G1, G2a and G2b-0. Lines that start with "g " arrive from cepheus_usb.c (UDP port 5141
+  * of the phone); the answers go to the live log as "CEPHEUS GPU:". The only writes are those of "g g1", through a
+  * closed list of registers (gpu_wr_cc / gpu_wr_gcc); everything else is read only.
+  *   g survey          state of the GPU clock branches in the GCC and, only if that is safe, of the gpucc
+  *   g g1              G1: power the CX domain and the GMU clocks, then read the GMU
+  *   g smmu [map|cb N] G2a: read only inventory of the GPU SMMU (needs g g1 first), in steps
++ *   g smmu wtest      G2b-0: does the SMMU take writes? Neutral values in stream group 0 and context bank 1, read back
+  *   g r ADDR [N]      read N 32-bit words (default 1, at most 16) at the physical address ADDR (hex)
+  * Windows: GCC 0x100000..0x1fffff always; gpucc 0x2c90000..0x2c98fff only while gcc_gpu_cfg_ahb_clk is running (reading
+  * it with that clock off would hang the bus); the GMU 0x2c6a000..0x2c8ffff only once G1 has left it readable. Offsets and bits come from the Linux
+@@ -451,6 +452,86 @@ gpu_smmu_cb(const char *args)
+ 	    gpu_srd(cb + 0x30u), gpu_srd(cb + 0x10u), gpu_srd(cb + 0x24u), gpu_srd(cb + 0x20u), gpu_srd(cb + 0x38u), gpu_srd(cb + 0x58u));
+ }
+ 
++/*
++ * G2b-0: does the SMMU take writes? Only neutral values, only in stream group 0 and context bank 1 (both unused: the
++ * bank must be off, SCTLR.M = 0, and the SMR invalid), and each write is read back. The registers come from a closed
++ * list. Zeros for the bank (a bank that is off keeps garbage after the CX domain is powered, and Linux rewrites all of it
++ * at reset), a FAULT type for S2CR, an invalid SMR and a write-one-to-clear of FSR: what arm_smmu_device_reset() writes.
++ */
++#define GPU_SMMU_CB1    0x9000u
++
++static bool
++gpu_wr_smmu(uint32_t off, uint32_t val)
++{
++	static const uint32_t ok[] = { 0x800u, 0xc00u, GPU_SMMU_CB1 + 0x00u, GPU_SMMU_CB1 + 0x10u, GPU_SMMU_CB1 + 0x20u,
++		                       GPU_SMMU_CB1 + 0x24u, GPU_SMMU_CB1 + 0x30u, GPU_SMMU_CB1 + 0x38u, GPU_SMMU_CB1 + 0x58u };
++	for (unsigned i = 0; i < sizeof(ok) / sizeof(ok[0]); ++i) {
++		if (ok[i] == off) {
++			*(volatile uint32_t *)(gpu_smmu + off) = val;
++			__asm__ volatile ("dsb sy" ::: "memory");
++			return true;
++		}
++	}
++	printf("CEPHEUS GPU: escritura rechazada: smmu %#06x no esta en la lista\n", off);
++	return false;
++}
++
++/* Write val, read back, and say whether the register changed and whether it holds what was expected (under mask). */
++static bool
++gpu_smmu_wstep(const char *name, uint32_t off, uint32_t val, uint32_t expect, uint32_t mask, unsigned *changed)
++{
++	uint32_t before = gpu_srd(off);
++	if (!gpu_wr_smmu(off, val)) {
++		return false;
++	}
++	uint32_t after = gpu_srd(off);
++	bool ok = (after & mask) == (expect & mask);
++	if (after != before) {
++		++*changed;
++	}
++	printf("CEPHEUS GPU:   %-10s %#06x: %08x -> %08x (escrito %08x, se esperaba %08x): %s\n", name, off, before, after, val, expect,
++	    ok ? "ok" : "NO COINCIDE");
++	return ok;
++}
++
++static void
++gpu_smmu_wtest(void)
++{
++	struct gpu_smmu_geo g;
++	unsigned changed = 0, good = 0, total = 0;
++	if (!gpu_smmu_ok() || !gpu_smmu_geo(&g)) {
++		return;
++	}
++	if (((g.numpage + 1) << g.pgshift) != GPU_SMMU_CB1 || g.numcb < 2) {
++		printf("CEPHEUS GPU: wtest rechazado: el banco 1 no esta donde se esperaba (pagina %#x, NUMCB=%u)\n",
++		    (g.numpage + 1) << g.pgshift, g.numcb);
++		return;
++	}
++	if ((gpu_srd(GPU_SMMU_CB1) & 1u) || (gpu_srd(0x800u) & (1u << 31))) {
++		printf("CEPHEUS GPU: wtest rechazado: el banco 1 esta habilitado o el SMR 0 es valido (estan en uso)\n");
++		return;
++	}
++	printf("CEPHEUS GPU: === G2b-0: prueba de escritura en la SMMU (grupo 0, banco 1) ===\n");
++#define WSTEP(name, off, val, expect, mask) (++total, good += gpu_smmu_wstep(name, off, val, expect, mask, &changed))
++	WSTEP("S2CR[0]", 0xc00u, 0x00020000u, 0x00020000u, 0x000300ffu);                 /* TYPE = FAULT, CBNDX = 0 */
++	WSTEP("SMR[0]", 0x800u, 0x00000000u, 0x00000000u, 0xffffffffu);                  /* invalid */
++	WSTEP("cb1 SCTLR", GPU_SMMU_CB1 + 0x00u, 0x00000000u, 0x00000000u, 0xffffffffu);
++	WSTEP("cb1 TTBR0lo", GPU_SMMU_CB1 + 0x20u, 0x00000000u, 0x00000000u, 0xffffffffu);
++	WSTEP("cb1 TTBR0hi", GPU_SMMU_CB1 + 0x24u, 0x00000000u, 0x00000000u, 0xffffffffu);
++	WSTEP("cb1 TCR", GPU_SMMU_CB1 + 0x30u, 0x00000000u, 0x00000000u, 0xffffffffu);
++	WSTEP("cb1 TCR2", GPU_SMMU_CB1 + 0x10u, 0x00000000u, 0x00000000u, 0xffffffffu);
++	WSTEP("cb1 MAIR0", GPU_SMMU_CB1 + 0x38u, 0x00000000u, 0x00000000u, 0xffffffffu);
++	WSTEP("cb1 FSR", GPU_SMMU_CB1 + 0x58u, 0xffffffffu, 0x00000000u, 0xffffffffu);   /* write one to clear */
++#undef WSTEP
++	if (good == total) {
++		printf("CEPHEUS GPU: === G2b-0 superada: la SMMU acepta escrituras (%u de %u registros cambiaron) ===\n", changed, total);
++	} else if (changed == 0) {
++		printf("CEPHEUS GPU: === G2b-0: las escrituras se IGNORAN (ningun registro cambio): la SMMU esta protegida ===\n");
++	} else {
++		printf("CEPHEUS GPU: === G2b-0 parcial: %u de %u coinciden, %u cambiaron ===\n", good, total, changed);
++	}
++}
++
+ static void
+ gpu_smmu_cmd(const char *a)
+ {
+@@ -463,8 +544,10 @@ gpu_smmu_cmd(const char *a)
+ 		gpu_smmu_map();
+ 	} else if (!strncmp(a, "cb", 2) && (a[2] == 0 || a[2] == ' ')) {
+ 		gpu_smmu_cb(a + 2);
++	} else if (!strncmp(a, "wtest", 5) && (a[5] == 0 || a[5] == ' ')) {
++		gpu_smmu_wtest();
+ 	} else {
+-		printf("CEPHEUS GPU: smmu: g smmu | g smmu map | g smmu cb N\n");
++		printf("CEPHEUS GPU: smmu: g smmu | g smmu map | g smmu cb N | g smmu wtest\n");
+ 	}
+ }
+ 
