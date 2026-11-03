@@ -14,7 +14,7 @@ import sys
 import time
 
 HOST, PORT = '192.168.7.2', 5141
-LOGS = '/mnt/c/Users/Jous/Documents/git/ios-cepheus/logs/live*.txt'
+LOGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'logs', 'live*.txt')
 NAMES = {0x03: 'LISTO?', 0x13: 'ENTRA', 0x23: 'MUEVE', 0x33: 'SALE', 0x43: 'ECO', 0xf3: 'ERROR', 0x04: 'SALE?', 0x05: 'MUEVE?'}
 
 

@@ -2,7 +2,7 @@
 # Build the iOS 16.7.16 (20H392) root image for cepheus/sweet from WSL2 Ubuntu.
 # Reads the IPSW you already have on Windows; nothing Apple-owned is committed or uploaded.
 #
-#   bash tools/build-root-wsl.sh /mnt/c/Users/Jous/Desktop/ios-cepheus/research/ipsw-x/iPhone10,3_16.7.16_20H392_Restore.ipsw
+#   bash tools/build-root-wsl.sh /mnt/c/Users/<tu-usuario>/<ruta-a-tu-repo>/research/ipsw-x/iPhone10,3_16.7.16_20H392_Restore.ipsw
 #
 # Needs sudo, ~20 GB free in WSL and ~13 GB free where OUT lives.
 # Output: research/ipsw-x/ios16-root.simg (gitignored), flashed with:

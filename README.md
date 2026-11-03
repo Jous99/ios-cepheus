@@ -81,7 +81,6 @@ Sustituye al shim propio de ios-sweet (guardado en `legacy/sweet-shim/`).
 - [x] iOS puede ocupar `userdata` (aprobado el 2026-10-15); confirmar cada paso destructivo antes de ejecutarlo
 - [ ] Dual boot: aparcado, se retoma más adelante
 - [ ] Licencia del repo de la GPU
-- [ ] Seguridad: revocar el classic token de GitHub, el secreto `FORGEJO_TOKEN` y los tokens antiguos de Forgejo (sin confirmar)
 
 ## Estructura
 

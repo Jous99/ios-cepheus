@@ -17,7 +17,7 @@ import time
 
 HOST = '192.168.7.2'
 PORT = 5141
-LOGS = '/mnt/c/Users/Jous/Documents/git/ios-cepheus/logs/live*.txt'
+LOGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'logs', 'live*.txt')
 
 
 def newest_log():

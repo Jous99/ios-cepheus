@@ -26,7 +26,7 @@ Esta guía explica cómo probar el port de iOS (ios-sweet adaptado a cepheus, Xi
 ## 2. Preparar el repositorio
 
 ```bash
-git clone https://git.joustech.space/Jous/ios-cepheus.git
+git clone https://github.com/Jous99/ios-cepheus.git
 cd ios-cepheus
 git checkout cepheus-port
 git pull origin cepheus-port

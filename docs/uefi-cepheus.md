@@ -66,7 +66,7 @@ Si `build firmware` falla, pega el primer `error` y la línea anterior.
 ## Payload de la partición `cust` (kernel + ADT)
 ```bash
 cd ~/ios-cepheus
-cp /mnt/c/Users/Jous/Desktop/ios-cepheus/out/kernel/out/kernel.development.cepheus out/kernel.macho
+cp /mnt/c/Users/<tu-usuario>/<ruta-a-tu-repo>/out/kernel/out/kernel.development.cepheus out/kernel.macho
 # MemTotal de TU móvil -> dram-size. 6 GB: 0x180000000; 8 GB: 0x200000000 (confirma con /proc/meminfo)
 python3 scripts/make-cepheus-adt.py --dram-size 0x180000000 --output out/kernel.macho.adt
 bash scripts/make-cepheus-cust-payload.sh out/kernel.macho out/kernel.macho.adt out/cust-payload.img
