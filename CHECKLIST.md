@@ -94,5 +94,4 @@ Riesgo real: un error deja el móvil sin arrancar nada hasta restaurar con `fast
 - [ ] Licencia del repo de la GPU (el público ya tiene `LICENSE`) (fácil)
 - [ ] Pasar `limpiar-privado.py` al repo público antes de cada subida (fácil)
 - [ ] Guardar en el repo los modelos de simulación con los que se prueba el código de la GPU (fácil)
-- [ ] **Seguridad:** revocar los tokens antiguos de GitHub y de Forgejo, **después** de comprobar que el nuevo funciona en los dos repos (fácil, sin confirmar)
 - [ ] Un script de una línea para los pasos 1 y 3 del flasheo (fácil)
