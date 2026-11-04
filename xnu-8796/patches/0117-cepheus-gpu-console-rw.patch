@@ -1,0 +1,328 @@
+diff --git a/bsd/dev/cepheus_gpu.c b/bsd/dev/cepheus_gpu.c
+index c5f2928..118ea66 100644
+--- a/bsd/dev/cepheus_gpu.c
++++ b/bsd/dev/cepheus_gpu.c
+@@ -1,5 +1,5 @@
+ /*
+- * Adreno 640 bring-up console, gates G0, G1, G2a, G2b-0, G2b-1 and G2b-2. Lines that start with "g " arrive from cepheus_usb.c (UDP port 5141
++ * Adreno 640 bring-up console, gates G0, G1, G2a, G2b-0, G2b-1, G2b-2 and the guarded read/write console G2c. Lines that start with "g " arrive from cepheus_usb.c (UDP port 5141
+  * of the phone); the answers go to the live log as "CEPHEUS GPU:". The only writes are those of "g g1", through a
+  * closed list of registers (gpu_wr_cc / gpu_wr_gcc); everything else is read only.
+  *   g survey          state of the GPU clock branches in the GCC and, only if that is safe, of the gpucc
+@@ -10,6 +10,17 @@
+  *                     then restored; with "valid" the SMR written has VALID = 1 (for the GMU stream, id 5 mask 0x400)
+  *   g smmu clk        G2b-2: turn on gcc_ddrss_gpu_axi_clk, the "mem" clock of the SMMU that Linux enables before any access
+  *   g r ADDR [N]      read N 32-bit words (default 1, at most 16) at the physical address ADDR (hex)
++ * G2c, to explore from the PC without rebuilding the kernel (all numbers are hex):
++ *   g w ADDR VAL              write one word and read it back
++ *   g wq ADDR V0 [V1..V7]     write up to 8 consecutive words, quietly (to load the GMU firmware)
++ *   g wm ADDR MASK VAL        read-modify-write: new = (old & ~MASK) | (VAL & MASK)
++ *   g poll ADDR MASK VAL [US] wait until (reg & MASK) == VAL (default 1000 us, at most 1000000)
++ *   g ram [KIB]               a physically contiguous scratch buffer in RAM (default 0x400 KiB, at most 0x1000), zeroed
++ *   g rr OFF [N]              read N words (at most 16) of the buffer, at byte offset OFF
++ *   g rw OFF V0 [V1..V7]      write up to 8 words of the buffer at byte offset OFF, then clean the cache
++ * Writable: gpucc, GMU and SMMU (they only serve the GPU) once g g1 has powered them; in the GCC only wm, only on the GPU
++ * registers of gpu_gcc_wm_ok and only on their listed bits. gcc_gpu_cfg_ahb_clk (0x71004) is left out on purpose: turning
++ * it off would hang every access to the gpucc.
+  * Windows: GCC 0x100000..0x1fffff always; gpucc 0x2c90000..0x2c98fff only while gcc_gpu_cfg_ahb_clk is running (reading
+  * it with that clock off would hang the bus); the GMU 0x2c6a000..0x2c8ffff only once G1 has left it readable. Offsets and bits come from the Linux
+  * drivers/clk/qcom/gcc-sm8150.c and gpucc-sm8150.c; the base of the gpucc is the one of cepheus.dts.
+@@ -20,8 +31,12 @@
+ #include <sys/errno.h>
+ #include <kern/clock.h>
+ #include <machine/machine_routines.h>
++#include <arm/caches_internal.h>
++#include <vm/pmap.h>
++#include <vm/vm_kern.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ void cepheus_gpu_console(const char *line);
+ 
+ #define GPU_GCC_PA      0x00100000u
+@@ -716,6 +731,259 @@ gpu_read(const char *args)
+ 	}
+ }
+ 
++/*
++ * G2c: guarded read/write console.
++ */
++struct gpu_gcc_wm {
++	uint32_t off, mask;
++};
++
++static const struct gpu_gcc_wm gpu_gcc_wm_ok[] = {
++	{ 0x52004u, (1u << 15) | (1u << 16) },  /* votes of the GPU to GPLL0 */
++	{ 0x7100cu, 0x3u },                     /* gcc_gpu_memnoc_gfx_clk: enable and hardware control */
++	{ 0x71018u, 0x3u },                     /* gcc_gpu_snoc_dvm_gfx_clk */
++	{ 0x71154u, 0x3u },                     /* gcc_ddrss_gpu_axi_clk */
++	{ 0x8c010u, 0x3u },                     /* gcc_gpu_iref_clk */
++};
++
++/*
++ * Up to n hex words separated by spaces. Returns how many were read, or -1 if any token is not a hex word or if there are
++ * more than n words: a word is never dropped in silence (a load of firmware shifted by one word would not warn).
++ */
++static int
++gpu_words(const char *s, uint32_t *v, unsigned n)
++{
++	unsigned k = 0;
++	for (;;) {
++		char tok[12];
++		unsigned t = 0;
++		uint32_t w;
++		while (*s == ' ') {
++			++s;
++		}
++		if (*s == 0) {
++			return (int)k;
++		}
++		while (*s && *s != ' ' && t + 1 < sizeof(tok)) {
++			tok[t++] = *s++;
++		}
++		tok[t] = 0;
++		if ((*s && *s != ' ') || !gpu_hex(tok, &w) || k >= n) {
++			return -1;
++		}
++		v[k++] = w;
++	}
++}
++
++/* "name" or "name args" -> the text after the name; NULL if the line is another command. */
++static const char *
++gpu_cmd(const char *line, const char *name)
++{
++	size_t n = strlen(name);
++	if (strncmp(line, name, n) != 0 || (line[n] != 0 && line[n] != ' ')) {
++		return NULL;
++	}
++	return line + n;
++}
++
++/* The word at address a if it may be accessed that way, else NULL after saying why. */
++static volatile uint32_t *
++gpu_ptr(uint32_t a, bool write, bool rmw, uint32_t mask)
++{
++	int w = gpu_window(a);
++	if ((a & 3u) || w == 0) {
++		printf("CEPHEUS GPU: %#09x: direccion no alineada o fuera de las ventanas\n", a);
++		return NULL;
++	}
++	if (w == 2 && !gpu_cc_readable()) {
++		printf("CEPHEUS GPU: %#09x: gpucc no se puede acceder ahora (gcc_gpu_cfg_ahb_clk apagado)\n", a);
++		return NULL;
++	}
++	if ((w == 3 || w == 4) && !gpu_gmu_readable()) {
++		printf("CEPHEUS GPU: %#09x: el GMU y la SMMU necesitan el dominio CX (ejecuta g g1 antes)\n", a);
++		return NULL;
++	}
++	switch (w) {
++	case 1: {
++		uint32_t off = a - GPU_GCC_PA;
++		if (!write) {
++			return (volatile uint32_t *)(gpu_gcc + off);
++		}
++		if (!rmw) {
++			printf("CEPHEUS GPU: %#09x: en el GCC solo se escribe con wm (con mascara)\n", a);
++			return NULL;
++		}
++		for (unsigned i = 0; i < sizeof(gpu_gcc_wm_ok) / sizeof(gpu_gcc_wm_ok[0]); ++i) {
++			if (gpu_gcc_wm_ok[i].off == off) {
++				if (mask & ~gpu_gcc_wm_ok[i].mask) {
++					printf("CEPHEUS GPU: %#09x: la mascara %08x toca bits no permitidos (solo %08x)\n", a, mask, gpu_gcc_wm_ok[i].mask);
++					return NULL;
++				}
++				return (volatile uint32_t *)(gpu_gcc + off);
++			}
++		}
++		printf("CEPHEUS GPU: %#09x: ese registro del GCC no esta en la lista\n", a);
++		return NULL;
++	}
++	case 2:
++		return (volatile uint32_t *)(gpu_cc + (a - GPU_CC_PA));
++	case 3:
++		return (volatile uint32_t *)(gpu_gmu + (a - GPU_GMU_PA));
++	default:
++		return (volatile uint32_t *)(gpu_smmu + (a - GPU_SMMU_PA));
++	}
++}
++
++static void
++gpu_cmd_w(const char *args, bool quiet)
++{
++	uint32_t v[9];
++	int r = gpu_words(args, v, quiet ? 9 : 2);
++	if (r < 2 || (!quiet && r != 2)) {
++		printf("CEPHEUS GPU: uso: g w ADDR VAL | g wq ADDR V0 [V1..V7]  (hex, sin palabras de mas)\n");
++		return;
++	}
++	unsigned n = (unsigned)r;
++	for (unsigned i = 0; i + 1 < n; ++i) {      /* every address is checked before the first write */
++		if (!gpu_ptr(v[0] + 4 * i, true, false, 0xffffffffu)) {
++			return;
++		}
++	}
++	for (unsigned i = 0; i + 1 < n; ++i) {
++		volatile uint32_t *p = gpu_ptr(v[0] + 4 * i, true, false, 0xffffffffu);
++		uint32_t before = quiet ? 0 : *p;
++		*p = v[1 + i];
++		__asm__ volatile ("dsb sy" ::: "memory");
++		if (!quiet) {
++			printf("CEPHEUS GPU: w %#09x: %08x -> %08x (escrito %08x)\n", v[0], before, *p, v[1]);
++		}
++	}
++}
++
++static void
++gpu_cmd_wm(const char *args)
++{
++	uint32_t v[3];
++	if (gpu_words(args, v, 3) != 3) {
++		printf("CEPHEUS GPU: uso: g wm ADDR MASK VAL  (hex, sin palabras de mas)\n");
++		return;
++	}
++	volatile uint32_t *p = gpu_ptr(v[0], true, true, v[1]);
++	if (!p) {
++		return;
++	}
++	uint32_t before = *p, now = (before & ~v[1]) | (v[2] & v[1]);
++	*p = now;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	printf("CEPHEUS GPU: wm %#09x: %08x -> %08x (mascara %08x, valor %08x)\n", v[0], before, *p, v[1], v[2]);
++}
++
++static void
++gpu_cmd_poll(const char *args)
++{
++	uint32_t v[4];
++	int n = gpu_words(args, v, 4);
++	if (n < 3) {
++		printf("CEPHEUS GPU: uso: g poll ADDR MASK VAL [US]  (hex, sin palabras de mas)\n");
++		return;
++	}
++	uint32_t us = n == 4 ? v[3] : 1000;
++	if (us > 1000000u) {
++		us = 1000000u;
++	}
++	volatile uint32_t *p = gpu_ptr(v[0], false, false, 0);
++	if (!p) {
++		return;
++	}
++	uint32_t waited = 0, val = *p;
++	while ((val & v[1]) != v[2] && waited < us) {
++		delay(1);
++		++waited;
++		val = *p;
++	}
++	printf("CEPHEUS GPU: poll %#09x: (valor & %08x) == %08x: %s tras %u us (valor %08x)\n", v[0], v[1], v[2],
++	    (val & v[1]) == v[2] ? "SI" : "NO", waited, val);
++}
++
++/* A physically contiguous scratch buffer in RAM, for page tables and the parts of the GMU firmware that live in memory. */
++static vm_offset_t gpu_ram_va;
++static uint64_t gpu_ram_pa;
++static uint32_t gpu_ram_size;
++
++static void
++gpu_cmd_ram(const char *args)
++{
++	uint32_t kib = 0x400;
++	if (!gpu_ram_va) {
++		int n = gpu_words(args, &kib, 1);
++		if (n == 0) {
++			kib = 0x400;
++		}
++		if (n < 0 || kib < 4 || kib > 0x1000) {
++			printf("CEPHEUS GPU: ram: el tamano va en KiB (hex), de 4 a 0x1000\n");
++			return;
++		}
++		vm_offset_t va = 0;
++		if (kmem_alloc_contig(kernel_map, &va, (vm_size_t)kib * 1024, PAGE_MASK, 0, 0, KMA_DATA | KMA_ZERO | KMA_PERMANENT,
++		    VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++			printf("CEPHEUS GPU: ram: no se pudo reservar %#x KiB\n", kib);
++			return;
++		}
++		ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)va);
++		if (!pn) {
++			printf("CEPHEUS GPU: ram: no se pudo obtener la direccion fisica\n");
++			return;
++		}
++		gpu_ram_va = va;
++		gpu_ram_pa = ptoa_64(pn);
++		gpu_ram_size = kib * 1024;
++		flush_dcache64((addr64_t)gpu_ram_pa, gpu_ram_size, TRUE);
++	}
++	printf("CEPHEUS GPU: ram: direccion fisica %#llx, tamano %#x bytes (%#x KiB)\n", (unsigned long long)gpu_ram_pa, gpu_ram_size,
++	    gpu_ram_size / 1024);
++}
++
++static void
++gpu_cmd_rr(const char *args)
++{
++	uint32_t v[2];
++	int n = gpu_words(args, v, 2);
++	uint32_t count = n == 2 ? v[1] : 1;
++	if (!gpu_ram_va) {
++		printf("CEPHEUS GPU: rr: reserva primero el buffer con g ram\n");
++		return;
++	}
++	if (n < 1 || (v[0] & 3u) || count < 1 || count > 16 || v[0] > gpu_ram_size || 4 * count > gpu_ram_size - v[0]) {
++		printf("CEPHEUS GPU: uso: g rr OFF [N]  (hex, OFF alineado a 4, N de 1 a 16, dentro de %#x)\n", gpu_ram_size);
++		return;
++	}
++	flush_dcache64((addr64_t)(gpu_ram_pa + v[0]), 4 * count, TRUE);   /* see what a device wrote */
++	for (uint32_t i = 0; i < count; ++i) {
++		printf("CEPHEUS GPU: rr %#07x = %08x\n", v[0] + 4 * i, *(volatile uint32_t *)(gpu_ram_va + v[0] + 4 * i));
++	}
++}
++
++static void
++gpu_cmd_rw(const char *args)
++{
++	uint32_t v[9];
++	int r = gpu_words(args, v, 9);
++	if (!gpu_ram_va) {
++		printf("CEPHEUS GPU: rw: reserva primero el buffer con g ram\n");
++		return;
++	}
++	if (r < 2 || (v[0] & 3u) || v[0] > gpu_ram_size || 4 * (unsigned)(r - 1) > gpu_ram_size - v[0]) {
++		printf("CEPHEUS GPU: uso: g rw OFF V0 [V1..V7]  (hex, OFF alineado a 4, dentro de %#x, sin palabras de mas)\n", gpu_ram_size);
++		return;
++	}
++	unsigned n = (unsigned)r;
++	for (unsigned i = 1; i < n; ++i) {
++		*(volatile uint32_t *)(gpu_ram_va + v[0] + 4 * (i - 1)) = v[i];
++	}
++	flush_dcache64((addr64_t)(gpu_ram_pa + v[0]), 4 * (n - 1), TRUE);     /* so that a device sees it */
++	printf("CEPHEUS GPU: rw %#07x: %u palabras escritas\n", v[0], n - 1);
++}
++
+ void
+ cepheus_gpu_console(const char *line)
+ {
+@@ -732,10 +1000,24 @@ cepheus_gpu_console(const char *line)
+ 		gpu_g1();
+ 	} else if (!strncmp(line, "smmu", 4) && (line[4] == 0 || line[4] == ' ')) {
+ 		gpu_smmu_cmd(line + 4);
++	} else if (gpu_cmd(line, "w")) {
++		gpu_cmd_w(gpu_cmd(line, "w"), false);
++	} else if (gpu_cmd(line, "wq")) {
++		gpu_cmd_w(gpu_cmd(line, "wq"), true);
++	} else if (gpu_cmd(line, "wm")) {
++		gpu_cmd_wm(gpu_cmd(line, "wm"));
++	} else if (gpu_cmd(line, "poll")) {
++		gpu_cmd_poll(gpu_cmd(line, "poll"));
++	} else if (gpu_cmd(line, "ram")) {
++		gpu_cmd_ram(gpu_cmd(line, "ram"));
++	} else if (gpu_cmd(line, "rr")) {
++		gpu_cmd_rr(gpu_cmd(line, "rr"));
++	} else if (gpu_cmd(line, "rw")) {
++		gpu_cmd_rw(gpu_cmd(line, "rw"));
+ 	} else if (line[0] == 'r' && (line[1] == 0 || line[1] == ' ')) {
+ 		gpu_read(line + 1);
+ 	} else {
+-		printf("CEPHEUS GPU: comandos: survey | g1 | smmu [map|cb N] | r ADDR [N]\n");
++		printf("CEPHEUS GPU: comandos: survey | g1 | smmu [map|cb N|wtest|gtest] | r | w | wq | wm | poll | ram | rr | rw\n");
+ 	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_CEPHEUS */
