@@ -21,8 +21,13 @@ hfs_sha=31d5ec238dfab485e78a9a30b8b92d13e8914f03
 hfs_tmp=$(mktemp -d)
 trap 'rm -rf "$hfs_tmp"' EXIT
 git init -q "$hfs_tmp"
-git -C "$hfs_tmp" fetch -q --depth 1 \
-    https://github.com/apple-oss-distributions/hfs "$hfs_sha"
+for attempt in 1 2 3 4; do
+    git -C "$hfs_tmp" fetch -q --depth 1 \
+    https://github.com/apple-oss-distributions/hfs "$hfs_sha" && break
+    [[ $attempt -lt 4 ]] || { echo "HFS: no se pudo descargar tras $attempt intentos" >&2; exit 1; }
+    echo "HFS: intento $attempt fallido, reintento en $((attempt * 10)) s" >&2
+    sleep $((attempt * 10))
+done
 git -C "$hfs_tmp" checkout -q FETCH_HEAD
 [[ "$(git -C "$hfs_tmp" rev-parse HEAD)" == "$hfs_sha" ]]
 

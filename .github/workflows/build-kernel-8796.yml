@@ -83,7 +83,7 @@ jobs:
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
         run: |
           bash build.sh 2>&1 | tee build.log
-          echo "=== exit: $? ==="
+          echo "=== exit de build.sh: ${PIPESTATUS[0]} ==="
           grep -c ' error: ' build.log || true
 
       - name: Collect
@@ -93,6 +93,15 @@ jobs:
           cp -R dxb/fakeroot/System/Library/Kernels/. out/ 2>/dev/null || true
           ls -la out || true
           (cd out && shasum -a 256 kernel.* > SHA256SUMS) || true
+
+      - name: Verify kernel
+        if: always()
+        run: |
+          if [ -z "$(find out -name 'kernel.*' -size +1000k 2>/dev/null)" ]; then
+            echo "::error::No se ha generado ningun kernel (out/kernel.* de mas de 1 MB): la compilacion fallo, mira build.log"
+            exit 1
+          fi
+          ls -la out
 
       - name: Upload
         if: always()
