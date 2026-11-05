@@ -1,9 +1,9 @@
-# Trabajar en ios-cepheus (base UniXNU)
+# Working on ios-cepheus (UniXNU base)
 
-- Lee `MIGRATION.md` y `STATUS.md` antes de empezar. Actualiza `STATUS.md` tras cada hito: commits, IDs de CI, resultados exactos de compilación/arranque y trabajo pendiente. Distingue observaciones de suposiciones.
-- El arranque de pruebas es siempre temporal (`fastboot boot`). Conserva Android y las copias de seguridad de particiones.
-  Aprobado el 2026-10-15: iOS puede ocupar `userdata`; confirma con el usuario cada paso destructivo.
-- Nombres: código nuevo `cepheus_*` / `CEPHEUS`, comentarios de debug "CEPHEUS debug", guardas `#if CEPHEUS`.
-- Parches nuevos: desde `0085` en `xnu-8796/patches/`. Los de debug van en `patches-extra/`.
-- No subas a git volcados del dispositivo, números de serie ni artefactos de Apple.
-- Historia previa (sweet): `docs/ios-sweet-legacy/`.
+- Read `MIGRATION.md` and `STATUS.md` before starting. Update `STATUS.md` after every milestone: commits, CI IDs, exact build/boot results and pending work. Distinguish observations from assumptions.
+- Test boots are always temporary (`fastboot boot`). Keep Android and the partition backups.
+  Approved on 2026-10-15: iOS may occupy `userdata`; confirm every destructive step with the user.
+- Naming: new code `cepheus_*` / `CEPHEUS`, debug comments "CEPHEUS debug", guards `#if CEPHEUS`.
+- New patches: from `0085` on in `xnu-8796/patches/`. Debug ones go in `patches-extra/`.
+- Do not commit device dumps, serial numbers or Apple artifacts to git.
+- Earlier history (sweet): `docs/ios-sweet-legacy/`.

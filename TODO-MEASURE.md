@@ -1,87 +1,87 @@
-# TODO-MEASURE: lista de mediciones en el Xiaomi Mi 9 real
+# TODO-MEASURE: list of measurements on the real Xiaomi Mi 9
 
-> Original en chino: `docs/original-zh/TODO-MEASURE.md`.
-> Cada punto tiene un lugar de destino en `board.toml` o en un script. Herramientas: TWRP (o cualquier recovery que permita entrar al sistema)
-> + fastboot + Mi 9 con el bootloader desbloqueado.
-> Se distinguen los valores de referencia de plataforma (que se pueden reutilizar de raphael/nabu) de los que hay que medir.
+> Chinese original: `docs/original-zh/TODO-MEASURE.md`.
+> Every item has a destination in `board.toml` or in a script. Tools: TWRP (or any recovery that allows entering the system)
+> + fastboot + a Mi 9 with the bootloader unlocked.
+> Platform reference values (which can be reused from raphael/nabu) are distinguished from those that must be measured.
 
 ## 1. DRAM (-> `board.toml` `[payload.adt]` `dram_size`)
 
 ```bash
-# Shell de TWRP:
-cat /proc/meminfo | head -3        # anota MemTotal
+# TWRP shell:
+cat /proc/meminfo | head -3        # note MemTotal
 ```
-- Versión de 6 GB: MemTotal ~ 5.6-5.8x10^6 kB -> valor inicial `dram_size = 0x180000000`
-- Versión de 8 GB: MemTotal ~ 7.6-7.8x10^6 kB -> valor inicial `dram_size = 0x200000000`
-- Método de calibración en el STATUS.md de nabu: MemTotal + reservas (modem/hyp/rmtfs, unos 816 MB) ~ capacidad física
-- La base es fija: `0x80000000` (común a SM8150)
+- 6 GB version: MemTotal ~ 5.6-5.8x10^6 kB -> initial value `dram_size = 0x180000000`
+- 8 GB version: MemTotal ~ 7.6-7.8x10^6 kB -> initial value `dram_size = 0x200000000`
+- Calibration method in nabu's STATUS.md: MemTotal + reservations (modem/hyp/rmtfs, about 816 MB) ~ physical capacity
+- The base is fixed: `0x80000000` (common to SM8150)
 
-## 2. Partición userdata (-> `board.toml` `[userdata]` `first_lba`/`last_lba`)
+## 2. Userdata partition (-> `board.toml` `[userdata]` `first_lba`/`last_lba`)
 
 ```bash
-# Shell de TWRP (primero confirma qué número de sda es userdata):
+# TWRP shell (first confirm which sda number is userdata):
 ls -l /dev/block/by-name/userdata
-cat /sys/block/sda/sdaXX/start     # sectores de 512 B
+cat /sys/block/sda/sdaXX/start     # 512 B sectors
 cat /sys/block/sda/sdaXX/size
 ```
-Conversión: `first_lba = start / 8`, `last_lba = first_lba + size/8 - 1` (LBA de UFS = 4096 B)
-Verificación cruzada: `fastboot partition-size:userdata` (los bytes deben ser = (last-first+1)*4096)
+Conversion: `first_lba = start / 8`, `last_lba = first_lba + size/8 - 1` (UFS LBA = 4096 B)
+Cross-check: `fastboot partition-size:userdata` (the bytes must be = (last-first+1)*4096)
 
-## 3. Dirección del framebuffer del panel (-> reg del nodo fbcon en `make-cepheus-adt.py`)
+## 3. Panel framebuffer address (-> reg of the fbcon node in `make-cepheus-adt.py`)
 
 ```bash
-# Shell de TWRP:
-cat /proc/device-tree/soc/qcom,mdss-sspp@0/... # o directamente
+# TWRP shell:
+cat /proc/device-tree/soc/qcom,mdss-sspp@0/... # or directly
 dmesg | grep -i "mdss\|framebuffer\|s6e3fc"
 ```
-Panel del Mi 9: Samsung s6e3fc2x01, 1080x2340. Hay que encontrar en el device tree de cepheus la dirección física y la longitud
-de MDSS/framebuffer (en nabu es `reg=<0x9C000000 0xC00000>`; en cepheus es distinta).
-El método para extraer el device tree se copia de `docs/nabu-dts-extract.md` de nabu (para el dtb del boot.img).
+Mi 9 panel: Samsung s6e3fc2x01, 1080x2340. The physical address and the length of MDSS/framebuffer have to be found in the
+cepheus device tree (on nabu it is `reg=<0x9C000000 0xC00000>`; on cepheus it is different).
+The method to extract the device tree is copied from nabu's `docs/nabu-dts-extract.md` (for the dtb of boot.img).
 
-## 4. UUID del volumen del OS (-> `board.toml` `root_match_volume_uuid`)
+## 4. OS volume UUID (-> `board.toml` `root_match_volume_uuid`)
 
 ```bash
-# En el PC, sobre el dmg del OS extraído del IPSW:
+# On the PC, on the OS dmg extracted from the IPSW:
 7z l -slt 044-76040-038.dmg | grep vol_uuid
 ```
-Si se usa el mismo IPSW que nabu, se puede empezar directamente con el valor de nabu `04769d26-2ca0-4825-b443-e2e5f88300f2`.
+If the same IPSW as nabu is used, one can start directly with nabu's value `04769d26-2ca0-4825-b443-e2e5f88300f2`.
 
-## 5. Generador de ADT (hecho: `scripts/make-cepheus-adt.py`)
+## 5. ADT generator (done: `scripts/make-cepheus-adt.py`)
 
-- Ya está adaptado a partir de `make-nabu-adt.py` del fork Lux12138/UniXNU, y se añadió el nodo `/cepheus-fbcon`
-  (lo consume el parche 0003: reg=<dirección física tamaño> + width/height/stride).
-- **Sigue por medir**: el reg/tamaño del fbcon (tras medir el punto 3, pásalo con `--fbcon-reg/--fbcon-size` o cambia los valores
-  por defecto del script; ahora son los valores provisionales de nabu `0x9C000000/0xC00000`).
+- Already adapted from `make-nabu-adt.py` of the Lux12138/UniXNU fork, and the `/cepheus-fbcon` node was added
+  (consumed by patch 0003: reg=<physical address size> + width/height/stride).
+- **Still to measure**: the reg/size of the fbcon (after measuring item 3, pass it with `--fbcon-reg/--fbcon-size` or change the script's
+  default values; they are now nabu's provisional values `0x9C000000/0xC00000`).
 
-## 6. Dirección del fork en el CI
+## 6. Fork address in the CI
 
-`.github/workflows/build-kernel.yml` clona ahora `Lux12138/UniXNU`. Al principio se puede usar tal cual (todo el trabajo de
-kernel para SM8150 está ahí); a largo plazo conviene hacer un fork de `UniXNU` con tu propio remoto y añadirle allí `make-cepheus-adt.py`.
+`.github/workflows/build-kernel.yml` now clones `Lux12138/UniXNU`. At first it can be used as is (all the kernel
+work for SM8150 is there); in the long run it is better to fork `UniXNU` with your own remote and add `make-cepheus-adt.py` there.
 
-## 7. Contenido de los parches del kernel específico de dispositivo (tarea posterior, no bloquea la compilación)
+## 7. Contents of the device-specific kernel patches (later task, does not block the build)
 
-Los 83 parches de `xnu-8796/patches/` son el trabajo acumulado de kernel de nabu para SM8150; los nombres de archivo se mantienen.
-Lo que hay que tocar para cepheus (tras medir):
-- `0004-nabu-machine-config.patch`: direcciones de plataforma / relacionado con DRAM
-- `0010-nabu-early-framebuffer-debug.patch`: dirección del fbcon
-- `0060~0063` (drivers táctiles): el IC táctil del Mi 9 es distinto al de nabu (¿NT36672?); hay que cambiarlo según el device tree de cepheus
-- `0061-nabu-iphone-x-display-size.patch`: adaptación de resolución
-- UFS/USB/PMIC probablemente son comunes; de momento no se tocan
+The 83 patches in `xnu-8796/patches/` are nabu's accumulated kernel work for SM8150; the file names are kept.
+What has to be touched for cepheus (after measuring):
+- `0004-nabu-machine-config.patch`: platform addresses / DRAM related
+- `0010-nabu-early-framebuffer-debug.patch`: fbcon address
+- `0060~0063` (touch drivers): the Mi 9 touch IC differs from nabu's (NT36672?); it has to be changed according to the cepheus device tree
+- `0061-nabu-iphone-x-display-size.patch`: resolution adaptation
+- UFS/USB/PMIC are probably common; they are left alone for now
 
-## 6 (bis). Conclusiones de la última práctica con el fork de nabu (2026-10-24)
+## 6 (bis). Conclusions from the last session with the nabu fork (2026-10-24)
 
-(El original repite la numeración "6".)
+(The original repeats the numbering "6".)
 
-- El bloqueo actual de nabu es un panic tras `execve`, ya localizado: al ADT le falta `maxmem` (límite de memoria "owned"), lo que
-  infla 116 veces el contador de páginas de VM (freepg=91.199.444 páginas ~ 373 GB), y la asignación de páginas revienta sí o sí.
-  Arreglo = inyectar en el ADT `maxmem=4864` (igual a `owned_memory_size`).
-  -> **Qué significa para cepheus: una vez medidos `dram_size` / `owned_memory_size`,
-  `maxmem` debe ser igual a `owned_memory_size` (en una máquina de 6 GB, unos 6144 menos la zona reservada; vale lo que se mida).**
-  El CI clona el último código del fork, así que ese arreglo ya está incluido; el `repos/UniXNU-nabu-fork` local estaba atrasado y,
-  si hace falta, se sincroniza con `git -C repos/UniXNU-nabu-fork pull`.
-- El fork se compila solo en un WSL local, y su workflow de CI no se ha mantenido con las nuevas imágenes de runner:
-  la trampa de hostcompat que pisamos fue la primera; el arreglo está en el comentario `HOST_COMPAT_CFLAGS` de `build-kernel.yml`.
+- nabu's current blocker is a panic after `execve`, already located: the ADT lacks `maxmem` (the "owned" memory limit), which
+  inflates the VM page counter 116 times (freepg=91,199,444 pages ~ 373 GB), and page allocation blows up inevitably.
+  Fix = inject `maxmem=4864` into the ADT (equal to `owned_memory_size`).
+  -> **What it means for cepheus: once `dram_size` / `owned_memory_size` are measured,
+  `maxmem` must equal `owned_memory_size` (on a 6 GB machine, about 6144 minus the reserved area; whatever is measured).**
+  The CI clones the latest fork code, so that fix is already included; the local `repos/UniXNU-nabu-fork` was out of date and,
+  if needed, is synchronized with `git -C repos/UniXNU-nabu-fork pull`.
+- The fork builds only in a local WSL, and its CI workflow has not been maintained with the new runner images:
+  the hostcompat trap we stepped on was the first one; the fix is in the `HOST_COMPAT_CFLAGS` comment of `build-kernel.yml`.
 
-> **Nota del traductor (2026-10-25):** en este repo, `scripts/make-cepheus-adt.py` **no fija `maxmem`** (se comprobó con grep en
-> scripts, kits, configs, board.toml y workflows; solo usa `darwinboot-memory-size`), y `board.toml` trae
-> `owned_memory_size = "0x20000000"`. Revisa este punto al medir la DRAM: es el mismo tipo de fallo que describe esta sección.
+> **Translator's note (2026-10-25):** in this repo, `scripts/make-cepheus-adt.py` **does not set `maxmem`** (checked with grep in
+> scripts, kits, configs, board.toml and workflows; it only uses `darwinboot-memory-size`), and `board.toml` has
+> `owned_memory_size = "0x20000000"`. Review this point when measuring the DRAM: it is the same kind of failure this section describes.
