@@ -1,0 +1,177 @@
+diff --git a/bsd/dev/cepheus_gpu.c b/bsd/dev/cepheus_gpu.c
+index 118ea66..b1d5799 100644
+--- a/bsd/dev/cepheus_gpu.c
++++ b/bsd/dev/cepheus_gpu.c
+@@ -984,6 +984,156 @@ gpu_cmd_rw(const char *args)
+ 	printf("CEPHEUS GPU: rw %#07x: %u palabras escritas\n", v[0], n - 1);
+ }
+ 
++/*
++ * G4 feasibility probe: can this kernel talk to TrustZone with SMC, the way Linux does it (qcom_scm)? Loading the GPU zap shader
++ * needs the PAS service of TrustZone, so if the call cannot be made nothing else of the GPU path matters. Read only: the only
++ * calls issued are "is this call available" (service INFO, command IS_CALL_AVAIL) and "does the PAS support peripheral N"
++ * (service PIL, command PAS_IS_SUPPORTED). Nothing here loads, authenticates or resets anything.
++ *   g el                       the exception level this kernel runs at
++ *   g scm probe                is PAS_IS_SUPPORTED available? all four SMC conventions (SMC64/32, standard/fast)
++ *   g scm avail SVC CMD [C [F]]   is the call SVC/CMD available? C = 1 for SMC64 (default), 0 for SMC32; F = 1 for a fast call
++ *   g scm pas N [C [F]]        does the PAS support peripheral N? (Linux uses 13 for the GPU)
++ */
++#define GPU_SCM_SVC_INFO 0x6
++#define GPU_SCM_INFO_IS_CALL_AVAIL 0x1
++#define GPU_SCM_SVC_PIL 0x2
++#define GPU_SCM_PIL_PAS_IS_SUPPORTED 0x7
++#define GPU_SCM_OWNER_SIP 0x2
++
++static void
++gpu_smc(uint64_t r[4])
++{
++	register uint64_t x0 __asm__("x0") = r[0];
++	register uint64_t x1 __asm__("x1") = r[1];
++	register uint64_t x2 __asm__("x2") = r[2];
++	register uint64_t x3 __asm__("x3") = r[3];
++	__asm__ volatile ("smc #0"
++	    : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3)
++	    :
++	    : "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
++	r[0] = x0;
++	r[1] = x1;
++	r[2] = x2;
++	r[3] = x3;
++}
++
++static uint64_t
++gpu_current_el(void)
++{
++	uint64_t el;
++	__asm__ volatile ("mrs %0, CurrentEL" : "=r"(el));
++	return el;
++}
++
++static uint64_t
++gpu_mpidr(void)
++{
++	uint64_t m;
++	__asm__ volatile ("mrs %0, MPIDR_EL1" : "=r"(m));
++	return m;
++}
++
++static void
++gpu_cmd_el(void)
++{
++	uint64_t el = gpu_current_el();
++	printf("CEPHEUS GPU: el: CurrentEL = EL%u (raw %#llx), MPIDR_EL1 = %#llx\n", (unsigned)((el >> 2) & 3), (unsigned long long)el,
++	    (unsigned long long)gpu_mpidr());
++}
++
++/* One SCM call with one register argument, as qcom_scm_smc does it: x0 = call id, x1 = argument descriptor, x2 = the argument. */
++static void
++gpu_scm_call(uint32_t svc, uint32_t cmd, uint64_t arg0, int conv64, int fast, uint64_t out[4])
++{
++	out[0] = ((uint64_t)(fast ? 1 : 0) << 31) | ((uint64_t)(conv64 ? 1 : 0) << 30) | ((uint64_t)GPU_SCM_OWNER_SIP << 24) |
++	    ((uint64_t)(svc & 0xff) << 8) | (cmd & 0xff);
++	out[1] = 1;
++	out[2] = arg0;
++	out[3] = 0;
++	gpu_smc(out);
++}
++
++static const char *
++gpu_scm_verdict(const uint64_t r[4])
++{
++	if (r[0] == 0) {
++		return r[1] ? "SI (disponible)" : "NO (no disponible)";
++	}
++	if (r[0] == (uint64_t)-1 || r[0] == 0xffffffffull) {
++		return "nadie atiende esa llamada (SMC desconocida)";
++	}
++	if (r[0] == 1) {
++		return "TrustZone la interrumpio (esta prueba no la reanuda)";
++	}
++	return "TrustZone devolvio un codigo de error";
++}
++
++static void
++gpu_scm_show(const char *what, int conv64, int fast, const uint64_t r[4])
++{
++	printf("CEPHEUS GPU: scm %s (SMC%d, %s): a0=%#llx a1=%#llx a2=%#llx a3=%#llx -> %s\n", what, conv64 ? 64 : 32, fast ? "rapida" : "estandar",
++	    (unsigned long long)r[0], (unsigned long long)r[1], (unsigned long long)r[2], (unsigned long long)r[3], gpu_scm_verdict(r));
++}
++
++static void
++gpu_cmd_scm(const char *args)
++{
++	uint32_t v[4];
++	uint64_t r[4];
++	while (*args == ' ') {
++		++args;
++	}
++	if (gpu_cmd(args, "probe")) {
++		uint64_t fn = ((uint64_t)GPU_SCM_PIL_PAS_IS_SUPPORTED) | ((uint64_t)GPU_SCM_SVC_PIL << 8) | ((uint64_t)GPU_SCM_OWNER_SIP << 24);
++		printf("CEPHEUS GPU: scm probe: se va a ejecutar la primera llamada SMC, desde EL%u\n", (unsigned)((gpu_current_el() >> 2) & 3));
++		delay(200000);
++		for (int conv64 = 1; conv64 >= 0; --conv64) {
++			for (int fast = 0; fast <= 1; ++fast) {
++				gpu_scm_call(GPU_SCM_SVC_INFO, GPU_SCM_INFO_IS_CALL_AVAIL, fn, conv64, fast, r);
++				gpu_scm_show("probe PAS_IS_SUPPORTED", conv64, fast, r);
++				delay(50000);
++			}
++		}
++		return;
++	}
++	if (gpu_cmd(args, "avail")) {
++		int n = gpu_words(gpu_cmd(args, "avail"), v, 4);
++		int conv64 = 1, fast = 0;
++		if (n < 2 || (n >= 3 && v[2] > 1) || (n >= 4 && v[3] > 1) || v[0] > 0xff || v[1] > 0xff) {
++			printf("CEPHEUS GPU: scm avail SVC CMD [C [F]]: SVC y CMD de 0 a 0xff, C y F valen 0 o 1\n");
++			return;
++		}
++		if (n >= 3) {
++			conv64 = (int)v[2];
++		}
++		if (n >= 4) {
++			fast = (int)v[3];
++		}
++		gpu_scm_call(GPU_SCM_SVC_INFO, GPU_SCM_INFO_IS_CALL_AVAIL,
++		    ((uint64_t)v[1] & 0xff) | (((uint64_t)v[0] & 0xff) << 8) | ((uint64_t)GPU_SCM_OWNER_SIP << 24), conv64, fast, r);
++		gpu_scm_show("avail", conv64, fast, r);
++		return;
++	}
++	if (gpu_cmd(args, "pas")) {
++		int n = gpu_words(gpu_cmd(args, "pas"), v, 3);
++		int conv64 = 1, fast = 0;
++		if (n < 1 || (n >= 2 && v[1] > 1) || (n >= 3 && v[2] > 1)) {
++			printf("CEPHEUS GPU: scm pas N [C [F]]: N es el periferico (hex), C y F valen 0 o 1\n");
++			return;
++		}
++		if (n >= 2) {
++			conv64 = (int)v[1];
++		}
++		if (n >= 3) {
++			fast = (int)v[2];
++		}
++		gpu_scm_call(GPU_SCM_SVC_PIL, GPU_SCM_PIL_PAS_IS_SUPPORTED, v[0], conv64, fast, r);
++		gpu_scm_show("pas", conv64, fast, r);
++		return;
++	}
++	printf("CEPHEUS GPU: scm probe | scm avail SVC CMD [C [F]] | scm pas N [C [F]]\n");
++}
++
+ void
+ cepheus_gpu_console(const char *line)
+ {
+@@ -1014,10 +1164,14 @@ cepheus_gpu_console(const char *line)
+ 		gpu_cmd_rr(gpu_cmd(line, "rr"));
+ 	} else if (gpu_cmd(line, "rw")) {
+ 		gpu_cmd_rw(gpu_cmd(line, "rw"));
++	} else if (gpu_cmd(line, "el")) {
++		gpu_cmd_el();
++	} else if (gpu_cmd(line, "scm")) {
++		gpu_cmd_scm(gpu_cmd(line, "scm"));
+ 	} else if (line[0] == 'r' && (line[1] == 0 || line[1] == ' ')) {
+ 		gpu_read(line + 1);
+ 	} else {
+-		printf("CEPHEUS GPU: comandos: survey | g1 | smmu [map|cb N|wtest|gtest] | r | w | wq | wm | poll | ram | rr | rw\n");
++		printf("CEPHEUS GPU: comandos: survey | g1 | smmu [map|cb N|wtest|gtest] | r | w | wq | wm | poll | ram | rr | rw | el | scm\n");
+ 	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_CEPHEUS */
