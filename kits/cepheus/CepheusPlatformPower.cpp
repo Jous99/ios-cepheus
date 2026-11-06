@@ -1,24 +1,24 @@
-// CepheusPlatformPower — esqueleto de PMGR (SM8150 / cepheus)
+// CepheusPlatformPower — PMGR skeleton (SM8150 / cepheus)
 //
-// Direcciones y semántica según el DTS público (ver docs/nabu-dts-extract.md; el original citaba docs/cepheus-dts-extract.md):
+// Addresses and semantics according to the public DTS (see docs/nabu-dts-extract.md; the original cited docs/cepheus-dts-extract.md):
 //   apps_rsc: rsc@18200000  compatible "qcom,rpmh-rsc"
 //     bank0 0x18200000 +0x10000
 //     bank1 0x18210000 +0x10000
 //     bank2 0x18220000 +0x10000
 //   aop_cmd_db 0x85f20000 +0x20000 (qcom,cmd-db)
 //   smem       0x86000000 +0x200000
-//   apss_shared mailbox 0x17c00000 (solo es un mailbox, no es RPMh)
+//   apss_shared mailbox 0x17c00000 (only a mailbox, not RPMh)
 //
-// En esta fase solo se hace la "superficie mínima verificable":
-//   - Probe(): lee los registros de versión/estado del RSC y confirma que 0x18200000 es accesible y que el valor es razonable
-//   - ReadAon()/WriteAon(): siguen siendo stubs seguros (devuelven 0 / no hacen nada)
-// No se escribe en TCS, para no colgar todo el equipo durante el bring-up temprano.
+// At this stage only the "minimal verifiable surface" is done:
+//   - Probe(): reads the RSC version/status registers and confirms that 0x18200000 is accessible and the value is reasonable
+//   - ReadAon()/WriteAon(): still safe stubs (return 0 / do nothing)
+// Nothing is written to the TCS, so the whole device does not hang during the early bring-up.
 
 #include <stdint.h>
 
 namespace cepheus {
 
-// ---- Direcciones físicas (valores autoritativos del DTS) ----
+// ---- Physical addresses (authoritative DTS values) ----
 static constexpr uint64_t kRscBank0   = 0x18200000ULL;
 static constexpr uint64_t kRscBank1   = 0x18210000ULL;
 static constexpr uint64_t kRscBank2   = 0x18220000ULL;
@@ -34,15 +34,15 @@ static constexpr uint64_t kPdcBase    = 0x0b220000ULL;
 static constexpr uint64_t kGccBase    = 0x00100000ULL;
 static constexpr uint64_t kUfsHcBase  = 0x01d84000ULL;
 static constexpr uint64_t kUfsPhyBase = 0x01d87000ULL;
-static constexpr uint64_t kTimeBaseHz = 19200000ULL;    // medido
+static constexpr uint64_t kTimeBaseHz = 19200000ULL;    // measured
 
-// ---- Registros DRV del RSC (puerto de comandos TCS de RPMh) ----
+// ---- RSC DRV registers (RPMh TCS command port) ----
 static constexpr uint32_t kRscDrvHwVersion   = 0x0000;
 static constexpr uint32_t kRscDrvCtlTcsDataHi = 0x0038;
 static constexpr uint32_t kRscDrvCtlTcsDataLo = 0x0040;
 static constexpr uint32_t kTcsAmcModeEnable   = (1u << 16);
 
-// Ayudas para construir la palabra de comando AMC (Address/Mask/Command), para la siguiente fase
+// Helpers to build the AMC (Address/Mask/Command) command word, for the next stage
 enum class RpmhCmd : uint32_t {
   kRead  = 0x1,
   kWrite = 0x2,
@@ -51,19 +51,19 @@ enum class RpmhCmd : uint32_t {
 };
 
 struct RpmhAmcCmd {
-  uint32_t message_id;   // dirección del TCS encontrada en cmd-db
-  uint32_t addr;         // dirección del recurso (de cmd-db)
+  uint32_t message_id;   // TCS address found in cmd-db
+  uint32_t addr;         // resource address (from cmd-db)
   uint32_t data;
-  uint32_t wait;         // 1 = requiere confirmación de finalización
+  uint32_t wait;         // 1 = requires completion acknowledgement
   RpmhCmd  cmd;
 };
 
 class CepheusPlatformPower {
  public:
-  // Sondeo de solo lectura: confirma que el RPMh RSC es accesible. No hace ninguna escritura.
+  // Read-only probe: confirms that the RPMh RSC is accessible. It does no writes at all.
   bool Probe();
 
-  // Sustituto mínimo de los slots 320 / 321 de ApplePMGR
+  // Minimal stand-in for ApplePMGR slots 320 / 321
   uint64_t ReadAon(uint32_t index);
   void     WriteAon(uint32_t index, uint64_t value);
 
@@ -76,40 +76,40 @@ class CepheusPlatformPower {
 };
 
 bool CepheusPlatformPower::Probe() {
-  // TODO(paso 1): sustituir la implementación provisional por lecturas MMIO reales (en UEFI primero MapFixedAddress,
-  //               en XNU con IOMemoryMap). Aquí solo se conserva la estructura, para evitar escribir registros por error.
+  // TODO(step 1): replace the provisional implementation with real MMIO reads (in UEFI first MapFixedAddress,
+  //               in XNU with IOMemoryMap). Only the structure is kept here, to avoid writing registers by mistake.
   ver_[0] = 0;
   ver_[1] = 0;
   ver_[2] = 0;
 
-  // TODO(paso 2): comprobar que el HW_VERSION de bank0..2 es de la misma familia (se espera distinto de 0 e igual)
-  // TODO(paso 3): en cmd-db, buscar la base del TCS por "sleep"/"wake"/"active"
-  // TODO(paso 4): reservar el canal rpmh en SMEM (para releer el ack)
+  // TODO(step 2): check that the HW_VERSION of bank0..2 is from the same family (expected non-zero and equal)
+  // TODO(step 3): in cmd-db, look up the TCS base by "sleep"/"wake"/"active"
+  // TODO(step 4): reserve the rpmh channel in SMEM (to read back the ack)
 
-  // Solo se podrá poner a true en la siguiente fase: antes hay que completar los pasos 1..3
+  // It can only be set to true in the next stage: steps 1..3 must be completed first
   probed_ = false;
   return probed_;
 }
 
 uint32_t CepheusPlatformPower::RscHwVersion(uint64_t /*bank*/) const {
-  return 0;  // TODO: lectura MMIO (bank + kRscDrvHwVersion)
+  return 0;  // TODO: MMIO read (bank + kRscDrvHwVersion)
 }
 
 uint64_t CepheusPlatformPower::ReadAon(uint32_t index) {
   (void)index;
-  // TODO: armar RpmhAmcCmd{cmd=kRead} → escribir TCS_DATA_HI/LO → esperar la finalización del DRV → obtener data
+  // TODO: build RpmhAmcCmd{cmd=kRead} → write TCS_DATA_HI/LO → wait for the DRV to complete → get data
   return 0;
 }
 
 void CepheusPlatformPower::WriteAon(uint32_t index, uint64_t value) {
   (void)index;
   (void)value;
-  // TODO: igual, con cmd=kWrite. El TCS es un recurso compartido: primero hay que serializar y poner protección por timeout.
+  // TODO: same, with cmd=kWrite. The TCS is a shared resource: serialize first and add timeout protection.
 }
 
 }  // namespace cepheus
 
-// Lo llama cepheus-platform-power.patch en bsd_init.c
+// Called by cepheus-platform-power.patch in bsd_init.c
 extern "C" void cepheus_pmgr_run(void) {
   static cepheus::CepheusPlatformPower pmgr;
   pmgr.Probe();

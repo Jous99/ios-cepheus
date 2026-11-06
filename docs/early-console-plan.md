@@ -1,184 +1,184 @@
-# Consola temprana del kernel por framebuffer (sacar el panic sin desmontar el móvil)
+# Early kernel console on the framebuffer (getting the panic out without opening the device)
 
-> Documento de la Xiaomi Pad 5 (nabu), traducido al español para referencia. El original en chino está en `docs/original-zh/`.
+> Document from the Xiaomi Pad 5 (nabu), translated to English for reference. The Chinese original is in `docs/original-zh/`.
 
-## El problema
+## The problem
 
-El kernel ya entra en ejecución (`DARWINBOOT: hand-off to the kernel` / `still-there kernel entry code ran`),
-pero **no aparece ningún texto de panic en pantalla**, y el control vuelve a UniXNU (se redibuja el menú).
+The kernel already starts running (`DARWINBOOT: hand-off to the kernel` / `still-there kernel entry code ran`),
+but **no panic text appears on screen**, and control returns to UniXNU (the menu is redrawn).
 
-Causa: el `kprintf` temprano de XNU saca por defecto por el **puerto serie**; sin UART es una caja negra.
-Y el UART exige desmontar y soldar cables, y en este punto no existen ni `fastboot` ni ADB.
+Cause: XNU's early `kprintf` outputs to the **serial port** by default; without a UART it is a black box.
+And the UART requires opening the device and soldering wires, and at this point neither `fastboot` nor ADB exist.
 
-## Condiciones favorables que ya existen
+## Favorable conditions that already exist
 
-DarwinBoot ya entrega al kernel la información de la memoria de vídeo (`Video[6]` de los boot args):
+DarwinBoot already hands the video memory information to the kernel (`Video[6]` in the boot args):
 
 ```
 video base=0x50000000   1600x2560   row 6400 bytes   32 bpp
 ```
 
-Es decir, `PE_state.video` ya tiene `v_baseAddr / v_rowBytes / v_width / v_height / v_depth`.
-El framebuffer es memoria normal mapeada, escribible desde EL1: **no hace falta hardware adicional**.
+That is, `PE_state.video` already has `v_baseAddr / v_rowBytes / v_width / v_height / v_depth`.
+The framebuffer is normal mapped memory, writable from EL1: **no extra hardware is needed**.
 
-## Plan: llevar una consola de framebuffer mínima
+## Plan: bring up a minimal framebuffer console
 
-No depende de `video_console` de Apple (ese subsistema sirve sobre todo a la pantalla de arranque en x86 y no está
-activo en ARM). Escribir un backend `putc` autocontenido es lo de menor riesgo.
+It does not depend on Apple's `video_console` (that subsystem mainly serves the boot screen on x86 and is not
+active on ARM). Writing a self-contained `putc` backend is the lowest-risk option.
 
 ```
 scripts/nabu-early-fb-console/
-├── nabu_fb_console.c    ~150 líneas
-│     - fuente de puntos 8x16 (ASCII 32..126; se puede empezar solo con 0x20..0x7E)
-│     - nabu_fb_putc(c): gestiona \n / \r / desplazamiento
-│     - escritura de píxeles: base + rowBytes*y + 4*x, 32 bpp, escribe 0x00FFFFFF
-│     - todo se basa en PE_state.video; sin MMIO ni registros
-└── inject.py            inyección en tiempo de compilación
+├── nabu_fb_console.c    ~150 lines
+│     - 8x16 bitmap font (ASCII 32..126; can start with just 0x20..0x7E)
+│     - nabu_fb_putc(c): handles \n / \r / scrolling
+│     - pixel writes: base + rowBytes*y + 4*x, 32 bpp, writes 0x00FFFFFF
+│     - everything is based on PE_state.video; no MMIO, no registers
+└── inject.py            build-time injection
 ```
 
-### Puntos de inyección
+### Injection points
 
-1. `PE_init_kprintf()` (`pexpert/gen/pe_gen.c` o la implementación de arm)
-   → añadir tras la inicialización:
+1. `PE_init_kprintf()` (`pexpert/gen/pe_gen.c` or the arm implementation)
+   → add after initialization:
    ```c
    if (PE_state.video.v_baseAddr != 0) { nabu_fb_init(); }
    ```
-2. `vputchar()` (`osfmk/console/printf.c` o el equivalente en pexpert)
-   → añadir tras la salida serie: `nabu_fb_putc(c);`
+2. `vputchar()` (`osfmk/console/printf.c` or the pexpert equivalent)
+   → add after the serial output: `nabu_fb_putc(c);`
 
-### Restricciones de seguridad
+### Safety constraints
 
-- `v_baseAddr == 0`, o `v_depth != 32`, o ancho/alto anómalos → **no activar nada** (return directo).
-- Solo escrituras de memoria normal; no se lee ni se escribe ningún registro del SoC.
-- Sin asignación de memoria (al principio no hay malloc): arrays estáticos para cursor y color.
-- Un fallo nunca hace panic; en el peor caso, "no aparece nada más en pantalla".
+- `v_baseAddr == 0`, or `v_depth != 32`, or abnormal width/height → **enable nothing** (return immediately).
+- Only normal memory writes; no SoC register is read or written.
+- No memory allocation (there is no malloc early on): static arrays for the cursor and color.
+- A failure never panics; in the worst case, "nothing more appears on screen".
 
-## Orden de implementación
+## Implementation order
 
-1. Obtener el código de xnu (en el CI o clonado en `~/xnu`) y confirmar:
-   - la ruta real y el cuerpo de `PE_init_kprintf`
-   - la ruta real y la firma de `vputchar`
-   - nombre y tipo de los campos de `PE_state.video` (`video_info_t`)
-2. Escribir `nabu_fb_console.c` con los nombres reales; pasarle antes `clang -fsyntax-only` en local.
-3. `inject.py`: insertar con cadenas ancla; tras insertar, **comprobar que el ancla es única y que la inserción
-   tuvo éxito**; si falla, hacer fallar la compilación.
-4. Subir al CI para compilar el kernel → rehacer boot.img (mismo flujo que `nabu-xnu64-*.img`) → arrancar en el móvil.
-5. Criterio:
-   - Aparece texto temprano del kernel / `panic(...)` en pantalla → la consola funciona ✅
-   - Sigue viéndose solo el menú de UniXNU → el kernel muere antes de `PE_init_kprintf`
-     → adelantar la inicialización del fb (antes de `arm_init` / `machine_startup`), o ponerla en la primera línea
-       de la entrada en C tras `Entry.S`.
+1. Get the xnu code (in the CI or cloned into `~/xnu`) and confirm:
+   - the real path and body of `PE_init_kprintf`
+   - the real path and signature of `vputchar`
+   - name and type of the `PE_state.video` fields (`video_info_t`)
+2. Write `nabu_fb_console.c` with the real names; run `clang -fsyntax-only` on it locally first.
+3. `inject.py`: insert using anchor strings; after inserting, **check that the anchor is unique and that the insertion
+   succeeded**; if it fails, make the build fail.
+4. Push to the CI to build the kernel → rebuild boot.img (same flow as `nabu-xnu64-*.img`) → boot on the device.
+5. Criteria:
+   - Early kernel text / `panic(...)` appears on screen → the console works ✅
+   - Only the UniXNU menu is still visible → the kernel dies before `PE_init_kprintf`
+     → move the fb initialization earlier (before `arm_init` / `machine_startup`), or put it on the first line
+       of the C entry after `Entry.S`.
 
-## Relación con PMGR
+## Relation to PMGR
 
-Es un **requisito previo**: sin salida temprana, cada paso de PMGR es un cambio a ciegas.
-Con la consola funcionando, el ciclo de depuración de PMGR pasa a ser:
-editar `NabuPlatformPower.cpp` → compilar → arrancar → ver en pantalla los valores de voltaje/reloj leídos.
+It is a **prerequisite**: without early output, every PMGR step is a blind change.
+With the console working, the PMGR debugging loop becomes:
+edit `NabuPlatformPower.cpp` → build → boot → see the voltage/clock values read on screen.
 
 ---
 
-## Avance medido (2026-10-21 19:49)
+## Measured progress (2026-10-21 19:49)
 
-### Corregido: array de vídeo desplazado (una de las causas reales)
+### Fixed: shifted video array (one of the real causes)
 
-`DarwinBootPkg/Driver/BootVideo.h` escribía `boot_args.Video[6]` como
+`DarwinBootPkg/Driver/BootVideo.h` wrote `boot_args.Video[6]` as
 
 ```
 [0]=base  [1]=1  [2]=rowBytes  [3]=width  [4]=height  [5]=32
 ```
 
-mientras que XNU (`pexpert/arm/pe_init.c:425`) espera
+while XNU (`pexpert/arm/pe_init.c:425`) expects
 
 ```
 [0]=base  [1]=rowBytes  [2]=width  [3]=height  [4]=depth  [5]=display
 ```
 
-→ el kernel leía `rowBytes=1 / width=6400 / height=1600 / depth=2560`,
-`initialize_screen()` lo daba por fallido → **volvía en silencio al puerto serie** → nunca había salida del kernel en pantalla.
+→ the kernel read `rowBytes=1 / width=6400 / height=1600 / depth=2560`,
+`initialize_screen()` treated it as failed → **silently fell back to the serial port** → there was never kernel output on screen.
 
-Se corrigió al formato correcto (y los índices que usa DarwinBoot para dibujar su propio texto).
-Medido después: `base=0x50000000 row=6400 width=1600 height=2560 depth=32 display=0` ✅
+It was fixed to the correct format (along with the indices DarwinBoot uses to draw its own text).
+Measured afterwards: `base=0x50000000 row=6400 width=1600 height=2560 depth=32 display=0` ✅
 
-### Pero sigue sin salida del kernel → el kernel muere antes de `PE_create_console`
+### But still no kernel output → the kernel dies before `PE_create_console`
 
-`PE_create_console()` en `osfmk/arm/arm_init.c:616` es el primer punto donde podría salir texto.
-Con los parámetros de vídeo ya correctos y aun así sin salida, significa que **no llega hasta ahí**.
+`PE_create_console()` in `osfmk/arm/arm_init.c:616` is the first point where text could come out.
+With the video parameters now correct and still no output, it means **it does not get that far**.
 
-## Primera sospecha actual: el nivel de excepción (EL) de partida no coincide
+## Current main suspect: the starting exception level (EL) does not match
 
-| Hecho | Explicación |
+| Fact | Explanation |
 |---|---|
-| La sonda de DarwinBoot mide `EL=4` (= EL1) | Ahora entregamos el kernel **en EL1** |
-| El código de DarwinBoot exige `DarwinCurrentEl() == 4` | Fuerza EL1 |
-| Cadena real de Apple | **iBoot entrega en EL2 y XNU baja a EL1 por sí mismo** |
+| The DarwinBoot probe measures `EL=4` (= EL1) | We now hand off the kernel **at EL1** |
+| DarwinBoot's code requires `DarwinCurrentEl() == 4` | Forces EL1 |
+| Real Apple chain | **iBoot hands off at EL2 and XNU drops to EL1 by itself** |
 
-Al principio, `arm_init` / `arm_start` de XNU acceden a registros de sistema de EL2
-(`HCR_EL2`, `VTCR_EL2`, `VHE`, etc.). **Si el kernel cree estar en EL2 pero está en EL1, la primera instrucción
-relacionada provoca una excepción, y todavía no hay ninguna consola inicializada → muerte silenciosa.**
-Coincide exactamente con lo observado: parámetros de vídeo correctos, el código de entrada del kernel se ejecutó,
-y ni una sola letra.
+Early on, XNU's `arm_init` / `arm_start` access EL2 system registers
+(`HCR_EL2`, `VTCR_EL2`, `VHE`, etc.). **If the kernel believes it is at EL2 but is at EL1, the first related
+instruction raises an exception, and no console has been initialized yet → silent death.**
+This matches exactly what was observed: correct video parameters, the kernel entry code ran,
+and not a single letter.
 
-### Cómo comprobarlo (siguiente paso, una de dos)
+### How to check it (next step, one of two)
 
-**A. Que el kernel hable por sí mismo** (lo más directo)
-En la primera línea de `arm_init()` de `osfmk/arm/arm_init.c`, inyectar un `putc` de framebuffer autocontenido
-(que solo escriba en la memoria de vídeo a la que apunta `boot_args_ptr->Video`, sin depender de ninguna consola):
+**A. Make the kernel speak for itself** (the most direct)
+On the first line of `arm_init()` in `osfmk/arm/arm_init.c`, inject a self-contained framebuffer `putc`
+(that only writes to the video memory pointed to by `boot_args_ptr->Video`, without depending on any console):
 
 ```c
 nabu_fb_early_init(boot_args_ptr->Video);
 nabu_fb_early_puts("arm_init enter\n");
 ```
-Y poner un marcador antes y después de `machine_startup`, `PE_init_platform` y `PE_create_console`:
-así se ve con precisión hasta qué línea llega el kernel.
+And put a marker before and after `machine_startup`, `PE_init_platform` and `PE_create_console`:
+this shows precisely up to which line the kernel gets.
 
-**B. Cambiar DarwinBoot para entregar en EL2**
-Cambiar la comprobación `DarwinCurrentEl() != 4` para admitir EL2 (o quitarla), de modo que el kernel arranque
-desde EL2 como en la cadena real de Apple. Riesgo: DarwinBoot corre ahora en EL1; para que entregue el control en EL2
-hay que hacer un cambio de EL extra (`eret` a EL2), un cambio mayor.
+**B. Change DarwinBoot to hand off at EL2**
+Change the `DarwinCurrentEl() != 4` check to accept EL2 (or remove it), so that the kernel starts
+from EL2 as in the real Apple chain. Risk: DarwinBoot now runs at EL1; to hand over control at EL2
+an extra EL switch is needed (`eret` to EL2), a bigger change.
 
-> Se recomienda empezar por A (da más información y tiene menos riesgo) y, una vez localizado el punto de muerte,
-> decidir si hace falta B.
+> Starting with A is recommended (it gives more information and has less risk); once the point of death is located,
+> decide whether B is needed.
 
 ---
 
-## Ajuste del plan: primero "bloques de control", sin fuente de texto
+## Plan adjustment: "checkpoint blocks" first, no text font
 
-Escribir una fuente 8×16 exige ~1500 bytes de datos de puntos, es fácil dibujarla mal y difícil de verificar;
-y **localizar el punto de muerte no necesita texto**: basta saber en qué punto de control se llega.
+Writing an 8×16 font requires ~1500 bytes of bitmap data, is easy to draw wrong and hard to verify;
+and **locating the point of death does not need text**: it is enough to know which checkpoint is reached.
 
-### Mecanismo
+### Mechanism
 
-`kits/nabu/nabu_early_mark.c`: dibuja **bloques de color de 48×48** en la memoria de vídeo a la que apunta
-`boot_args.Video`; no depende de la consola, no asigna memoria, no toca registros, y si los parámetros no son válidos
-se rinde en silencio (`depth!=32` / `base==0`).
+`kits/nabu/nabu_early_mark.c`: draws **48×48 colored blocks** into the video memory pointed to by
+`boot_args.Video`; it does not depend on the console, allocates no memory, touches no registers, and if the parameters are invalid
+it gives up silently (`depth!=32` / `base==0`).
 
-### Cómo se lee (una fila de bloques arriba a la izquierda)
+### How to read it (one row of blocks at the top left)
 
-| Bloques que se ven | Significado |
+| Blocks visible | Meaning |
 |---|---|
-| **0** | Ni siquiera entró en `arm_init`: muere en la entrada en ensamblador / al montar la MMU |
-| **1 (blanco)** | Entró en `arm_init` |
-| **2 (amarillo)** | Pasó `PE_init_platform` |
-| **3 (cian)** | Pasó `PE_create_console` |
-| **4 (verde)** | Pasó `machine_startup` |
-| **N en rojo** | Parámetros no válidos (abandonó con seguridad, sin corromper memoria) |
+| **0** | Did not even enter `arm_init`: dies in the assembly entry / while setting up the MMU |
+| **1 (white)** | Entered `arm_init` |
+| **2 (yellow)** | Passed `PE_init_platform` |
+| **3 (cyan)** | Passed `PE_create_console` |
+| **4 (green)** | Passed `machine_startup` |
+| **N in red** | Invalid parameters (gave up safely, without corrupting memory) |
 
-### Puntos de inyección (siguiente ronda, modificando el código fuente de XNU)
+### Injection points (next round, modifying the XNU source code)
 
 ```c
-// osfmk/arm/arm_init.c : primera línea de arm_init()
+// osfmk/arm/arm_init.c : first line of arm_init()
 nabu_mark_init(boot_args_ptr->Video);
 NABU_MARK(1);
 
-// después, uno tras cada paso clave
+// then, one after each key step
 PE_init_platform(...);   NABU_MARK(2);
 PE_create_console();     NABU_MARK(3);
-// dentro de machine_startup
+// inside machine_startup
 ```
 
-### Por qué este método es mejor
+### Why this method is better
 
-- ~110 líneas de código, sin datos de puntos: casi imposible "dibujarlo mal".
-- Para interpretarlo basta contar bloques; se ve bien en foto o vídeo.
-- Un fallo es totalmente seguro (solo escrituras de memoria de vídeo tras comprobar límites).
-- Una vez localizada la fase concreta, se decide si hace falta la fuente de texto (para entonces quizá ya no).
+- ~110 lines of code, no bitmap data: almost impossible to "draw it wrong".
+- Interpreting it only takes counting blocks; it shows up well in a photo or video.
+- A failure is completely safe (only video memory writes after bounds checking).
+- Once the specific phase is located, decide whether the text font is needed (by then it may no longer be).

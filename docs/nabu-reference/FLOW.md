@@ -1,149 +1,149 @@
-# Diagrama de flujo del bring-up de nabu
+# nabu bring-up flow diagram
 
-Generado: 2026-10-23
+Generated: 2026-10-23
 
-## I. Resumen de las siete etapas (según la división oficial `/porting/bring-up`)
+## I. Summary of the seven stages (following the official `/porting/bring-up` split)
 
 ```
                         ┌─────────────────────────────────────────────┐
-                        │  Stage 1  Firmware UEFI                     │
-                        │  Mu UEFI arranca y el framebuffer da salida  │
+                        │  Stage 1  UEFI firmware                     │
+                        │  Mu UEFI boots and the framebuffer outputs  │
                         └────────────────────┬────────────────────────┘
-                                             │ ✅ superada
+                                             │ ✅ passed
                         ┌────────────────────▼────────────────────────┐
-                        │  Stage 2  Menú de UniXNU                    │
-                        │  Lee unixnu.toml y lista las entradas        │
+                        │  Stage 2  UniXNU menu                       │
+                        │  Reads unixnu.toml and lists the entries    │
                         └────────────────────┬────────────────────────┘
-                                             │ ✅ superada
+                                             │ ✅ passed
                         ┌────────────────────▼────────────────────────┐
                         │  Stage 3  Payload                           │
-                        │  kernel.macho + .adt en su sitio             │
+                        │  kernel.macho + .adt in place               │
                         └────────────────────┬────────────────────────┘
-                                             │ ✅ superada
+                                             │ ✅ passed
                         ┌────────────────────▼────────────────────────┐
                         │  Stage 4  DarwinBoot                        │
-                        │ Valida kernel/ADT/trustcache → ExitBootServices│
+                        │ Checks kernel/ADT/trustcache → ExitBootServices│
                         └────────────────────┬────────────────────────┘
-                                             │ ✅ superada (el nodo RAMDisk es la clave)
+                                             │ ✅ passed (the RAMDisk node is the key)
                         ┌────────────────────▼────────────────────────┐
-                        │  Stage 5  Entrada kernel → platform expert  │
-                        │  Logs, sondas, inicialización de IOKit       │
+                        │  Stage 5  Kernel entry → platform expert    │
+                        │  Logs, probes, IOKit initialization         │
                         └────────────────────┬────────────────────────┘
-                                             │ 🟡 en curso
+                                             │ 🟡 in progress
                                              │ checkpoint 123
-                                             │ atascado en IOSurface
+                                             │ stuck at IOSurface
                         ┌────────────────────▼────────────────────────┐
-                        │  Stage 6  Almacenamiento y raíz              │
-                        │  block driver → volumen → raíz → launchd     │
+                        │  Stage 6  Storage and root                  │
+                        │  block driver → volume → root → launchd     │
                         └────────────────────┬────────────────────────┘
-                                             │ ⬜ sin empezar  ← Ruta A
+                                             │ ⬜ not started  ← Route A
                         ┌────────────────────▼────────────────────────┐
-                        │  Stage 7  Espacio de usuario                 │
-                        │  launchd → SpringBoard → escritorio          │
+                        │  Stage 7  User space                        │
+                        │  launchd → SpringBoard → desktop            │
                         └─────────────────────────────────────────────┘
                                              ▲
-                                             │ ⬜ a largo plazo  ← la Ruta B es su requisito previo
+                                             │ ⬜ long term  ← Route B is its prerequisite
 ```
 
-## II. Dentro de la Stage 5: dónde estamos parados
+## II. Inside Stage 5: where we are stopped
 
 ```
 arm_init
    │
-   ├── nabu_mark_map (mapeo del fb) ✅
-   │      └── UART tee: en QEMU sirve / en el teléfono está desactivado (0x9000000 en SM8150 es otro registro) ✅
+   ├── nabu_mark_map (fb mapping) ✅
+   │      └── UART tee: works in QEMU / disabled on the phone (0x9000000 on SM8150 is another register) ✅
    │
-   ├── bucle STARTUP (el checkpoint 50 es la entrada del bucle)
+   ├── STARTUP loop (checkpoint 50 is the loop entry)
    │      │
    │      ├── EARLY_BOOT / ulock_initialize        ✅ checkpoint 123
    │      ├── ml_processor_register                ✅
-   │      ├── corecrypto POST (todo PASSED)        ✅
-   │      ├── 32 autopruebas de SKYWALK            ✅
+   │      ├── corecrypto POST (all PASSED)         ✅
+   │      ├── 32 SKYWALK self-tests                ✅
    │      ├── bsd_autoconf → kminit                ✅
-   │      └── IOsurfaceRoot::installMemoryRegions  🛑 parado aquí
+   │      └── IOsurfaceRoot::installMemoryRegions  🛑 stopped here
    │
-   └── (después debería venir) setconf → vfs_mountroot → load_init_program
+   └── (should come next) setconf → vfs_mountroot → load_init_program
 ```
 
-## III. Las dos interpretaciones del bloqueo actual
+## III. The two interpretations of the current blocker
 
 ```
-                     parado en estas dos líneas:
+                     stopped at these two lines:
     IOsurfaceRoot::installMemoryRegions()
     IOSurface disallowing global lookups
                               │
               ┌───────────────┴───────────────┐
               │                               │
      ┌────────▼─────────┐          ┌──────────▼──────────┐
-     │ A: sin salida     │          │ B: log cortado       │
+     │ A: dead end      │          │ B: log cut off      │
      │                  │          │                     │
-     │ IOSurface cerrado│          │ El kernel sigue     │
-     │ el kext no corre │          │ corriendo, pero     │
-     │ en plataformas no│          │ después no hay      │
-     │ Apple: se detiene│          │ kprintf al fb       │
+     │ Closed IOSurface │          │ The kernel keeps    │
+     │ kext does not run│          │ running, but there  │
+     │ on non-Apple     │          │ is no kprintf to    │
+     │ platforms: stops │          │ the fb afterwards   │
      └────────┬─────────┘          └──────────┬──────────┘
               │                               │
-     hay que sustituirlo                necesita sondas más finas
-     (surface propio)                   o confirmar con log serie
+     it must be replaced               needs finer probes
+     (own surface)                     or confirming with a serial log
               │                               │
-        ← trabajo de la Ruta B             ← lo primero a descartar
+        ← Route B work                     ← the first thing to rule out
 ```
 
-**Importante**: **la interpretación B aún no se ha descartado.** Siempre asumimos que era un callejón sin salida, pero no verificamos si el kernel seguía corriendo.
-Cómo verificarlo: añadir sondas en los pasos siguientes, o un kprintf cerca de `setconf`.
+**Important**: **interpretation B has not been ruled out yet.** We always assumed it was a dead end, but we never verified whether the kernel kept running.
+How to verify it: add probes in the following steps, or a kprintf near `setconf`.
 
-## IV. Relación entre las dos rutas
+## IV. Relation between the two routes
 
 ```
-                    Línea base actual (checkpoint 123)
+                    Current baseline (checkpoint 123)
                               │
               ┌───────────────┴───────────────┐
               │                               │
     ┌─────────▼──────────┐        ┌───────────▼──────────┐
-    │  Ruta A            │        │  Ruta B              │
-    │  Raíz (archivos)    │        │  Pantalla (IOSurface) │
+    │  Route A           │        │  Route B             │
+    │  Root (files)      │        │  Display (IOSurface) │
     ├────────────────────┤        ├──────────────────────┤
-    │ 1. Imagen userdata  │        │ 1. Crear IOCoreSurfaceRoot│
-    │   (OS+SystemOS)     │        │ 2. Crear AppleCLCD   │
-    │ 2. Root UUID        │        │ 3. Reg. KernelConfig │
-    │ 3. Flash userdata   │        │ 4. Levantar IOMFB     │
-    │ 4. Montar raíz       │        │                      │
-    │ 5. Arranca launchd   │        │                      │
+    │ 1. userdata image  │        │ 1. Create IOCoreSurfaceRoot│
+    │   (OS+SystemOS)    │        │ 2. Create AppleCLCD  │
+    │ 2. Root UUID       │        │ 3. Reg. KernelConfig │
+    │ 3. Flash userdata  │        │ 4. Bring up IOMFB    │
+    │ 4. Mount root      │        │                      │
+    │ 5. launchd starts  │        │                      │
     ├────────────────────┤        ├──────────────────────┤
-    │ Plazo: 1-2 semanas  │        │ Plazo: 3-4 semanas   │
-    │ Riesgo: bajo         │        │ Riesgo: alto (placa)  │
+    │ Time: 1-2 weeks    │        │ Time: 3-4 weeks      │
+    │ Risk: low          │        │ Risk: high (board)   │
     └─────────┬──────────┘        └───────────┬──────────┘
               │                               │
               └───────────────┬───────────────┘
                               │
                     ┌─────────▼──────────┐
-                    │  Stage 7 Userland   │
+                    │  Stage 7 Userland  │
                     │  SpringBoard       │
                     └────────────────────┘
 ```
 
-**Las dos rutas no se contradicen**: A resuelve "si el sistema puede arrancar", B resuelve "si se puede ver".
-El requisito previo de A es descartar la "interpretación B" de arriba: si el kernel en realidad sigue corriendo, A lleva directo a la Stage 6.
+**The two routes do not contradict each other**: A answers "whether the system can boot", B answers "whether it can be seen".
+A's prerequisite is ruling out "interpretation B" above: if the kernel is actually still running, A leads straight to Stage 6.
 
-## V. Cómo desarrollar en paralelo
+## V. How to develop in parallel
 
 ```
-  rama main (línea base actual, siempre compilable y flasheable)
+  main branch (current baseline, always buildable and flashable)
     │
-    ├── feature/stage6-userdata      ← Ruta A
-    │     · [userdata] de board.toml y root_match_volume_uuid
-    │     · el CI añade el paso build userdata (hay que bajar OS/SystemOS, varios GB)
-    │     · no tocar los 9 interruptores de defconfig
+    ├── feature/stage6-userdata      ← Route A
+    │     · board.toml [userdata] and root_match_volume_uuid
+    │     · the CI adds the build userdata step (OS/SystemOS must be downloaded, several GB)
+    │     · do not touch the 9 defconfig switches
     │
-    └── feature/stage5-iosurface     ← Ruta B
+    └── feature/stage5-iosurface     ← Route B
           · iokit/Kernel/arm/NabuSurface.cpp + NabuFramebuffer.cpp
-          · registrar IOCoreSurfaceRoot / AppleCLCD en patches/xnu
-          · hay que añadir entradas en [kernel] archives
-          · no tocar [userdata] de board.toml
+          · register IOCoreSurfaceRoot / AppleCLCD in patches/xnu
+          · entries must be added to [kernel] archives
+          · do not touch board.toml [userdata]
 
-  Reglas:
-    1. main se mantiene siempre en el estado flasheable del checkpoint 123
-    2. cada rama tiene su propio CI y su propio flasheo, sin interferir
-    3. si una rama falla 2 compilaciones seguidas → volver a main y reevaluar
-    4. no compartir cambios de defconfig (fue lo que quemó una docena de rondas la última vez)
+  Rules:
+    1. main always stays in the flashable checkpoint 123 state
+    2. each branch has its own CI and its own flashing, without interfering
+    3. if a branch fails 2 builds in a row → go back to main and reassess
+    4. do not share defconfig changes (that is what burned a dozen rounds last time)
 ```

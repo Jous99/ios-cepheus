@@ -1,21 +1,21 @@
 # UniXNU on Xiaomi Pad 5 (nabu / SM8150)
 
-Registro completo del port que arranca el **kernel XNU de Apple** por UEFI en la **Xiaomi Pad 5 (nabu, Snapdragon 860 / SM8150)**.
+Full record of the port that boots **Apple's XNU kernel** through UEFI on the **Xiaomi Pad 5 (nabu, Snapdragon 860 / SM8150)**.
 
-> **Este equipo es la versión ampliada:** DRAM física de **12 GiB** (medido en TWRP: `MemTotal = 11766512 kB`,
-> es decir, 12 GiB menos unos 816 MB para modem/hyp/rmtfs) y userdata de **unos 468 GiB**
+> **This device is the upgraded version:** **12 GiB** of physical DRAM (measured in TWRP: `MemTotal = 11766512 kB`,
+> that is, 12 GiB minus about 816 MB for modem/hyp/rmtfs) and userdata of **about 468 GiB**
 > (`fastboot partition-size:userdata = 0x74167BB000`).
-> Por eso `dram_size = 0x300000000` está **medido para esta máquina**; no es el valor de un modelo estándar de 6/8 GB.
+> That is why `dram_size = 0x300000000` is **measured for this machine**; it is not the value of a standard 6/8 GB model.
 
-> **Estado**: **el kernel ya ejecuta hasta `execve("/sbin/launchd")`**
+> **Status**: **the kernel already runs up to `execve("/sbin/launchd")`**
 > (`Process 1 exec of /sbin/launchd failed, errno 2`).
-> Todo lo del lado del kernel pasa; lo que falta es un sistema de archivos raíz con los archivos del sistema.
+> Everything on the kernel side passes; what is missing is a root file system with the system files.
 
 ---
 
-## I. Hito: el kernel llegó a launchd
+## I. Milestone: the kernel reached launchd
 
-**Evidencia en pantalla**
+**On-screen evidence**
 
 ```
 Process 1 exec of /sbin/launchd failed, errno 2
@@ -27,39 +27,39 @@ PC=18446744005117767160
 LR=18446744005111703156
 ```
 
-**Cadena completa**
+**Full chain**
 
 ```
 bsd_autoconf()                            OK
   kminit()                                OK
-    IOsurfaceRoot::installMemoryRegions() OK   <- se había creído que se atascaba aquí
-bsd_init, segunda mitad                   OK
+    IOsurfaceRoot::installMemoryRegions() OK   <- it had been believed it got stuck here
+bsd_init, second half                     OK
   vfs_mountroot()                         OK
-  load_init_program()                     OK   <- resuelve /sbin/launchd
+  load_init_program()                     OK   <- resolves /sbin/launchd
     execve("/sbin/launchd")               errno 2 (ENOENT)
 ```
 
-**`errno 2` significa que el archivo no existe; no es un fallo del kernel.**
+**`errno 2` means the file does not exist; it is not a kernel failure.**
 
-### Nos equivocamos durante tres días
+### We were wrong for three days
 
-La línea de `IOsurfaceRoot::installMemoryRegions()` **nunca fue el final, solo el último kprintf**.
-Tras ella, `dtrace_postinit()`, `inittodr()` y la inicialización de red (compilación condicional) **no imprimen ningún log**,
-así que "el log se paró" se leyó como "el kernel se paró".
+The `IOsurfaceRoot::installMemoryRegions()` line **was never the end, only the last kprintf**.
+After it, `dtrace_postinit()`, `inittodr()` and the network initialization (conditional compilation) **print no log at all**,
+so "the log stopped" was read as "the kernel stopped".
 
-Lo que faltaba siempre era un sistema de archivos raíz.
+What was always missing was a root file system.
 
 ---
 
-## II. Cadena de arranque (verificada en el teléfono)
+## II. Boot chain (verified on the device)
 
 ```
-fastboot boot -> Mu UEFI -> menú de UniXNU -> payload de la partición cust
--> DarwinBoot -> lee el kernel de 51 MB -> analiza el Mach-O -> comprueba el ADT
--> asigna la ventana -> mapea segmentos -> ExitBootServices -> salta a XNU -> el kernel se ejecuta
+fastboot boot -> Mu UEFI -> UniXNU menu -> payload from the cust partition
+-> DarwinBoot -> reads the 51 MB kernel -> parses the Mach-O -> checks the ADT
+-> allocates the window -> maps segments -> ExitBootServices -> jumps to XNU -> the kernel runs
 ```
 
-Logs clave:
+Key logs:
 
 ```
 UNIXNU: runxnu entry vol=A2142798 path=\EFI\UniXNU\Payloads\kernel.macho cfgerr=[]
@@ -77,62 +77,62 @@ DARWINBOOT: hand-off to the kernel
 
 ---
 
-## III. Compilación local en Linux (72 segundos por ronda)
+## III. Local Linux build (72 seconds per round)
 
-El kernel ya se puede compilar en un WSL Ubuntu 24.04 local en **72 segundos** por ronda, frente a los 15-17 minutos del runner macOS de GitHub.
+The kernel can now be built on a local WSL Ubuntu 24.04 in **72 seconds** per round, versus 15-17 minutes on the GitHub macOS runner.
 
-| Elemento | Runner macOS de GitHub | WSL Ubuntu local |
+| Item | GitHub macOS runner | Local WSL Ubuntu |
 |---|---|---|
-| Compilación por ronda | 15-17 minutos | **72 segundos** |
-| Producto | 49,2 MB | **49 MB** |
-| Reproducible | Solo con CI | Se puede ejecutar en la máquina cuando quieras |
+| Build per round | 15-17 minutes | **72 seconds** |
+| Output | 49.2 MB | **49 MB** |
+| Reproducible | Only with CI | Can be run on the machine whenever you want |
 
-**Verificación del producto**
+**Output verification**
 
 ```
 file            Mach-O 64-bit arm64 executable, flags:<NOUNDEFS|PIE>
-__TEXT vmaddr   0xfffffff007004000      igual que el kernelcache original
+__TEXT vmaddr   0xfffffff007004000      same as the original kernelcache
 symbols         22708
-Sondas nabu     nabu_mark / nabu_mark_map / nabu_mark_num / nabu_mark_putc
-Sondeo de UFS   nabu_ufs_register_probe.cpp
+nabu probes     nabu_mark / nabu_mark_map / nabu_mark_num / nabu_mark_putc
+UFS probing     nabu_ufs_register_probe.cpp
 sha256          c756ecdb88a9dd50156dc27d2cdf48a08ddf93fcf204040fa57804f814fc3c15
 ```
 
-La cadena de herramientas viene de [`Allenwdk/xnu-linux-toolchain`](https://github.com/Allenwdk/xnu-linux-toolchain).
+The toolchain comes from [`Allenwdk/xnu-linux-toolchain`](https://github.com/Allenwdk/xnu-linux-toolchain).
 
-### 18 trampas al hacerlo funcionar en Linux
+### 18 pitfalls getting it to work on Linux
 
-| Categoría | Cantidad | Ejemplos |
+| Category | Count | Examples |
 |---|---|---|
-| Herramientas ausentes | 8 | `libdispatch` no tiene paquete en Ubuntu; `hostcompat.h` / `libc.h` / `copyfile.h` / `setmode` hubo que escribirlos todos |
-| Rutas escritas a mano | 5 | `/usr/bin/xcrun`, `/usr/sbin/sysctl`, `compression_tool`, `dsymutil`, `lzfse` |
-| BSD vs GNU | 3 | `sed -i ''`, `awk \(`, `-Wno-*` desconocidos |
-| Conflictos de lógica | 2 | doble enlazado de mockfs (23 símbolos duplicados), `TargetConditionals.h` duplicado |
+| Missing tools | 8 | `libdispatch` has no Ubuntu package; `hostcompat.h` / `libc.h` / `copyfile.h` / `setmode` all had to be written |
+| Hard-coded paths | 5 | `/usr/bin/xcrun`, `/usr/sbin/sysctl`, `compression_tool`, `dsymutil`, `lzfse` |
+| BSD vs GNU | 3 | `sed -i ''`, `awk \(`, unknown `-Wno-*` |
+| Logic conflicts | 2 | mockfs linked twice (23 duplicate symbols), duplicated `TargetConditionals.h` |
 
-**El más valioso**: en `makesyscalls.sh`, `printf("\t{ \(sy_call_t *\)...")` ——
-**el awk de BSD trata `\(` como escape, gawk conserva la barra invertida**: en Linux el `init_sysent.c` generado es todo
-`\(sy_call_t *\)`, y el compilador da un montón de `expected expression`. Se hizo un parche (`zzzz-nabu-awk-parens.patch`),
-porque `unixnu tree` reconstruye `.cache` cada vez y un cambio manual se sobrescribiría.
+**The most valuable one**: in `makesyscalls.sh`, `printf("\t{ \(sy_call_t *\)...")` ——
+**BSD awk treats `\(` as an escape, gawk keeps the backslash**: on Linux the generated `init_sysent.c` is all
+`\(sy_call_t *\)`, and the compiler throws a pile of `expected expression`. A patch was made (`zzzz-nabu-awk-parens.patch`),
+because `unixnu tree` rebuilds `.cache` every time and a manual change would be overwritten.
 
 ---
 
-## IV. Sistema de archivos raíz: 7-Zip lo extrae directamente, sin hdiutil
+## IV. Root file system: 7-Zip extracts it directly, no hdiutil
 
-`build userdata` se atasca en Linux con `hdiutil`. No hace falta escribir un analizador UDIF propio ——
-**7-Zip 23.01 soporta de forma nativa DMG + LZFSE** y extrae directamente el sistema de archivos completo de iOS:
+`build userdata` gets stuck on Linux at `hdiutil`. There is no need to write an own UDIF parser ——
+**7-Zip 23.01 natively supports DMG + LZFSE** and directly extracts the full iOS file system:
 
 ```bash
 sudo apt-get install -y p7zip-full
 7z x -y -o/tmp/dmgout 044-76040-038.dmg
 ```
 
-Resultado medido:
+Measured result:
 
 ```
 /sbin/launchd   561,856 bytes   Mach-O 64-bit arm64 executable
                                flags:<NOUNDEFS|DYLDLINK|TWOLEVEL|PIE>
 
-9.7 GB / 210,828 archivos
+9.7 GB / 210,828 files
   8.1G  System
   713M  usr
   483M  private
@@ -141,10 +141,10 @@ Resultado medido:
   960K  sbin
 ```
 
-**Ojo**: `dmg2img 1.6.7` **no soporta LZFSE**, da
-`Unsupported or corrupted block found: -2147483641` y produce una imagen basura. Usa 7-Zip.
+**Watch out**: `dmg2img 1.6.7` **does not support LZFSE**, it gives
+`Unsupported or corrupted block found: -2147483641` and produces a garbage image. Use 7-Zip.
 
-`7z l -slt` muestra directamente el método de compresión:
+`7z l -slt` shows the compression method directly:
 
 ```
 Method = Copy Zero2 LZFSE CRC
@@ -157,69 +157,69 @@ num_files: 165509
 
 ---
 
-## V. Seis trampas duras y sus soluciones (pisándolas en este orden se ahorran días)
+## V. Six hard pitfalls and their fixes (hitting them in this order saves days)
 
-### Trampa 1: `fastboot boot` da `Failed to load/authenticate boot image: Load Error`
+### Pitfall 1: `fastboot boot` gives `Failed to load/authenticate boot image: Load Error`
 
-**No es** que el ABL modificado desactive boot, **es el cable USB**.
+It is **not** the modified ABL disabling boot, **it is the USB cable**.
 
-- Un cable de carga malo pierde datos al transferir imágenes de ~96 MB -> el ABL falla al verificar
-- Con el cable de datos original y el puerto USB trasero de la placa base, la misma imagen da `Booting OKAY` de inmediato
+- A bad charging cable loses data when transferring ~96 MB images -> the ABL fails verification
+- With the original data cable and the rear motherboard USB port, the same image gives `Booting OKAY` right away
 
-### Trampa 2: el tamaño del ramdisk tiene límites inferior y superior
+### Pitfall 2: the ramdisk size has lower and upper limits
 
 | ramdisk | ABL | UEFI |
 |---|---|---|
 | 16 MB | Load Error | — |
-| 32 MB | OK | menú normal |
-| 64 MB | OK | menú normal |
-| 96 MB | OK | pantalla negra |
+| 32 MB | OK | normal menu |
+| 64 MB | OK | normal menu |
+| 96 MB | OK | black screen |
 
-Rango utilizable **32-64 MB**; `header_version = 1`, `page_size 2048`.
+Usable range **32-64 MB**; `header_version = 1`, `page_size 2048`.
 
-### Trampa 3: reinicia el dispositivo antes de `fastboot boot`
+### Pitfall 3: reboot the device before `fastboot boot`
 
-**El primer boot tras cada reinicio es el que más veces funciona**; boots seguidos dan Load Error (queda estado residual en el download buffer).
+**The first boot after each reboot is the one that works most often**; back-to-back boots give Load Error (residual state is left in the download buffer).
 
-### Trampa 4: meter el kernel en el volumen de firmware no funciona (presupuesto de descompresión de PEI)
+### Pitfall 4: putting the kernel in the firmware volume does not work (PEI decompression budget)
 
-| Tamaño de FVMAIN | Resultado |
+| FVMAIN size | Result |
 |---|---|
-| 8 MB (original) | el firmware funciona |
-| 62 MB (kernel sin comprimir) | vuelve a fastboot |
-| 15 MB (kernel comprimido con LZMA) | vuelve a fastboot |
+| 8 MB (original) | the firmware works |
+| 62 MB (uncompressed kernel) | back to fastboot |
+| 15 MB (LZMA-compressed kernel) | back to fastboot |
 
-El límite de FVMAIN es de unos 8-10 MB; el propio FD también tiene límite. **El kernel no puede ir en el segmento de kernel del boot.img, solo por almacenamiento.**
+The FVMAIN limit is about 8-10 MB; the FD itself also has a limit. **The kernel cannot go in the boot.img kernel segment, only through storage.**
 
-### Trampa 5: no hay ningún disco FAT (la más fundamental)
+### Pitfall 5: there is no FAT disk at all (the most fundamental one)
 
-En realidad el firmware trae una pila de almacenamiento completa (`UFSDxe` / `PartitionDxe` / `DiskIoDxe` / `Fat`),
-pero las particiones de Android son todas ext4/f2fs, así que UniXNU no encuentra ningún volumen con `unixnu.toml`.
+The firmware actually ships a full storage stack (`UFSDxe` / `PartitionDxe` / `DiskIoDxe` / `Fat`),
+but the Android partitions are all ext4/f2fs, so UniXNU finds no volume with `unixnu.toml`.
 
-### Trampa 6: la DRAM del ADT tiene que ser el valor medido
+### Pitfall 6: the ADT DRAM has to be the measured value
 
 ```
-dram-size               = 0x300000000   12 GiB (ampliada en este equipo)
-darwinboot-memory-size  = 0x20000000    ventana contigua de 512 MiB
+dram-size               = 0x300000000   12 GiB (upgraded on this device)
+darwinboot-memory-size  = 0x20000000    contiguous 512 MiB window
 ```
 
-`darwinboot-memory-size` es un bloque **contiguo** de memoria física que DarwinBoot pide al firmware.
-512 MiB bastan; un valor mayor es más difícil de encontrar como intervalo contiguo en `EfiConventionalMemory`.
+`darwinboot-memory-size` is a **contiguous** block of physical memory that DarwinBoot requests from the firmware.
+512 MiB is enough; a larger value is harder to find as a contiguous range in `EfiConventionalMemory`.
 
 ---
 
-## VI. Siguiente paso
+## VI. Next step
 
-**Lo único que falta es convertir la raíz extraída en un volumen montable.**
+**The only thing missing is turning the extracted root into a mountable volume.**
 
 ```bash
-./unixnu ipsw fetch OS Cryptex1,SystemOS      # ya descargado: OS 4,80 GiB + SystemOS 3,08 GiB
+./unixnu ipsw fetch OS Cryptex1,SystemOS      # already downloaded: OS 4.80 GiB + SystemOS 3.08 GiB
 7z x -y -o/tmp/dmgout out/ipsw/21H461/044-76040-038.dmg
-./unixnu build userdata                       # manifiesto SHNGROOT + dos ventanas
+./unixnu build userdata                       # SHNGROOT manifest + two windows
 fastboot flash userdata out/nabu/userdata/userdata-root.img
 ```
 
-Geometría de `[userdata]` (medida en TWRP):
+`[userdata]` geometry (measured in TWRP):
 
 ```
 first_lba = 0x288C40     2,654,272    (4 KiB LBA)
@@ -228,12 +228,12 @@ lba_bytes = 4096
 windows   = [OS, SystemOS]
 ```
 
-**Ya no es un problema de compilación ni de drivers: es un problema de datos.**
+**It is no longer a build or driver problem: it is a data problem.**
 
 ---
 
-## VII. Referencias
+## VII. References
 
-- [`Allenwdk/xnu-linux-toolchain`](https://github.com/Allenwdk/xnu-linux-toolchain) —— cadena de herramientas cruzada para Linux
-- [`1PJL/unixnu-nabu`](https://github.com/1PJL/unixnu-nabu) —— serie de diagnóstico de volúmenes UFS (tres pasos `Recover GPT` / `Build Volume` / `Repack`, sobre `ubuntu-24.04`)
-- `UniXNU` upstream —— port del kernel y cadena de arranque UEFI
+- [`Allenwdk/xnu-linux-toolchain`](https://github.com/Allenwdk/xnu-linux-toolchain) —— cross toolchain for Linux
+- [`1PJL/unixnu-nabu`](https://github.com/1PJL/unixnu-nabu) —— UFS volume diagnostic series (three steps `Recover GPT` / `Build Volume` / `Repack`, on `ubuntu-24.04`)
+- `UniXNU` upstream —— kernel port and UEFI boot chain

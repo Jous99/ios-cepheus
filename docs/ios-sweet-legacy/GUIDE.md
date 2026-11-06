@@ -1,29 +1,29 @@
-# Guía: ejecutar ios-cepheus en el Mi 9 o desde QEMU
+# Guide: running ios-cepheus on the Mi 9 or from QEMU
 
-Esta guía explica cómo probar el port de iOS (ios-sweet adaptado a cepheus, Xiaomi Mi 9) en el teléfono real y qué se puede hacer desde QEMU.
+This guide explains how to test the iOS port (ios-sweet adapted to cepheus, Xiaomi Mi 9) on the real phone and what can be done from QEMU.
 
-> **Aviso importante sobre QEMU:** QEMU no emula el SoC del Mi 9 (Qualcomm SM8150). Un kernel compilado para cepheus no arranca en QEMU, porque en cuanto toca el hardware real (UFS, PMIC, GPIO, pantalla) falla. QEMU sirve para comprobar que el build es correcto, probar herramientas y pruebas de humo en arm64, pero **no sirve para validar drivers ni el arranque real**. Esas pruebas solo se pueden hacer en el teléfono.
+> **Important note about QEMU:** QEMU does not emulate the Mi 9 SoC (Qualcomm SM8150). A kernel built for cepheus does not boot in QEMU, because it fails as soon as it touches the real hardware (UFS, PMIC, GPIO, display). QEMU is useful to check that the build is correct, to test tools and for arm64 smoke tests, but **it cannot validate drivers or the real boot**. Those tests can only be done on the phone.
 
 ---
 
-## 1. Requisitos previos
+## 1. Prerequisites
 
 ### Hardware
-- Xiaomi Mi 9 (cepheus) con batería cargada al menos al 60 %.
-- Cable USB de datos (no de solo carga).
-- Un PC con Windows, Linux o macOS.
+- Xiaomi Mi 9 (cepheus) with the battery charged to at least 60 %.
+- USB data cable (not a charge-only one).
+- A PC with Windows, Linux or macOS.
 
-### Software en el PC
+### Software on the PC
 - Git.
-- GitHub CLI (`gh`): `winget install GitHub.cli` en Windows.
-- Android platform-tools (`fastboot` y `adb`).
-- Xiaomi Mi Unlock Tool, si el bootloader aún no está desbloqueado.
-- Para QEMU: `qemu-system-aarch64` (Linux: `sudo apt install qemu-system-arm`; Windows: instalador oficial de QEMU).
+- GitHub CLI (`gh`): `winget install GitHub.cli` on Windows.
+- Android platform-tools (`fastboot` and `adb`).
+- Xiaomi Mi Unlock Tool, if the bootloader is not unlocked yet.
+- For QEMU: `qemu-system-aarch64` (Linux: `sudo apt install qemu-system-arm`; Windows: official QEMU installer).
 
 
 ---
 
-## 2. Preparar el repositorio
+## 2. Prepare the repository
 
 ```bash
 git clone https://github.com/Jous99/ios-cepheus.git
@@ -32,26 +32,26 @@ git checkout cepheus-port
 git pull origin cepheus-port
 ```
 
-Comprueba que las dos copias (Forgejo y GitHub) tienen el mismo commit:
+Check that both copies (Forgejo and GitHub) have the same commit:
 
 ```bash
 git ls-remote origin cepheus-port
 git ls-remote github cepheus-port
 ```
 
-Si los hashes no coinciden, espera a que el mirror sincronice o pulsa "Synchronize" en la configuración del mirror de Forgejo antes de compilar.
+If the hashes do not match, wait for the mirror to sync or press "Synchronize" in the Forgejo mirror settings before building.
 
 ---
 
-## 3. Compilar el kernel con el CI
+## 3. Build the kernel with the CI
 
-El build se hace en GitHub Actions (runner macOS), porque xnu necesita el toolchain de Xcode.
+The build runs on GitHub Actions (macOS runner), because xnu needs the Xcode toolchain.
 
-1. Abre `Jous99/ios-cepheus` en GitHub → pestaña **Actions**.
-2. Elige el workflow **xnu** en la columna izquierda.
-3. Pulsa **Run workflow** y usa estos valores:
+1. Open `Jous99/ios-cepheus` on GitHub → **Actions** tab.
+2. Choose the **xnu** workflow in the left column.
+3. Press **Run workflow** and use these values:
 
-| Campo | Valor |
+| Field | Value |
 |---|---|
 | Branch | `cepheus-port` |
 | `macos_version` | `13.5` |
@@ -59,7 +59,7 @@ El build se hace en GitHub Actions (runner macOS), porque xnu necesita el toolch
 | `machine_config` | `CEPHEUS` |
 | `keep_going` | `true` |
 
-4. Espera a que termine. Si falla, descarga el log y busca el primer error:
+4. Wait for it to finish. If it fails, download the log and look for the first error:
 
 ```bat
 gh run list -R Jous99/ios-cepheus --limit 3
@@ -67,23 +67,23 @@ gh run view ID_DEL_RUN -R Jous99/ios-cepheus --log-failed > fallo.txt
 findstr /n /i "error:" fallo.txt
 ```
 
-Sustituye `ID_DEL_RUN` por el ID real de la primera columna de `gh run list`.
+Replace `ID_DEL_RUN` with the real ID from the first column of `gh run list`.
 
-5. Si compila, descarga los artefactos del run (kernel y, si aplica, el shim) desde la página del run, en la sección **Artifacts**.
+5. If it builds, download the run artifacts (kernel and, if applicable, the shim) from the run page, in the **Artifacts** section.
 
 ---
 
-## 4. Ejecutar en el Mi 9
+## 4. Running on the Mi 9
 
-> **Atención:** desbloquear el bootloader borra todos los datos del teléfono. Haz copia de seguridad antes.
+> **Warning:** unlocking the bootloader erases all data on the phone. Make a backup first.
 
-### 4.1 Desbloquear el bootloader (si no lo está)
-1. En el teléfono: Ajustes → Acerca del teléfono → pulsa 7 veces en "Versión de MIUI". Activa "Depuración USB" y "Desbloqueo de OEM".
-2. Inicia sesión en la cuenta Mi en el teléfono.
-3. Con Mi Unlock Tool, desbloquea el bootloader. Espera el periodo de cola que indique la herramienta.
+### 4.1 Unlock the bootloader (if it is not unlocked)
+1. On the phone: Settings → About phone → tap "MIUI version" 7 times. Enable "USB debugging" and "OEM unlocking".
+2. Sign in to the Mi account on the phone.
+3. Unlock the bootloader with Mi Unlock Tool. Wait for the queue period the tool indicates.
 
-### 4.2 Arrancar el kernel sin instalarlo
-Usa siempre el arranque temporal, nunca `fastboot flash` sobre particiones críticas, para poder volver atrás:
+### 4.2 Boot the kernel without installing it
+Always use the temporary boot, never `fastboot flash` on critical partitions, so you can go back:
 
 ```bat
 adb reboot bootloader
@@ -91,59 +91,59 @@ fastboot devices
 fastboot boot RUTA\AL\kernel_o_payload.img
 ```
 
-El procedimiento exacto (payload, ramdisk, orden de arranque) depende del método de ios-sweet. Consulta el README del repo para ese paso, porque no está automatizado aquí.
+The exact procedure (payload, ramdisk, boot order) depends on the ios-sweet method. See the repo README for that step, because it is not automated here.
 
-### 4.3 Qué mirar en el primer arranque
-- Si el teléfono no pasa de la pantalla de fastboot, el problema suele estar en la cabecera o en la configuración de máquina.
-- Si arranca pero se reinicia, revisa el log serie o la salida que el kernel deja en la pantalla.
-- Las teclas de volumen y encendido deben responder si el driver de `sweet_keys.c` está bien mapeado para cepheus. Si el volumen no responde, el mapeo de GPIO6 del PM8150 es la primera sospecha.
+### 4.3 What to look at on the first boot
+- If the phone does not get past the fastboot screen, the problem is usually in the header or in the machine configuration.
+- If it boots but reboots, check the serial log or the output the kernel leaves on the screen.
+- The volume and power keys should respond if the `sweet_keys.c` driver is mapped correctly for cepheus. If volume does not respond, the PM8150 GPIO6 mapping is the first suspect.
 
-### 4.4 Volver atrás
-Basta con reiniciar sin el payload: `fastboot reboot`. Al no haber flasheado nada, el Android original sigue intacto.
+### 4.4 Going back
+Just reboot without the payload: `fastboot reboot`. Since nothing was flashed, the original Android is still intact.
 
 ---
 
-## 5. Probar desde QEMU
+## 5. Testing from QEMU
 
-QEMU no ejecuta el kernel del Mi 9. Lo que sí puedes hacer:
+QEMU does not run the Mi 9 kernel. What you can do:
 
-### 5.1 Comprobar que el binario es arm64 válido
+### 5.1 Check that the binary is valid arm64
 ```bash
 file ruta/al/kernel
 ```
 
-### 5.2 Prueba de humo con la máquina virt
-Útil para comprobar que el toolchain, los scripts y el empaquetado funcionan. No valida el port.
+### 5.2 Smoke test with the virt machine
+Useful to check that the toolchain, the scripts and the packaging work. It does not validate the port.
 
 ```bash
 qemu-system-aarch64 -M virt -cpu cortex-a72 -m 2G -nographic -kernel ruta/a/Image
 ```
 
-Si necesitas una imagen de prueba para `-kernel`, usa un Image de Linux arm64 de tu distribución. El kernel de iOS no se va a comportar bien aquí, y eso es esperado.
+If you need a test image for `-kernel`, use an arm64 Linux Image from your distribution. The iOS kernel will not behave well here, and that is expected.
 
-### 5.3 Qué esperar
-- Un kernel de cepheus en `-M virt` fallará o se quedará colgado en el primer acceso a hardware. Eso **no** indica un fallo del build.
-- Lo útil de QEMU es depurar la parte independiente de la plataforma: parsing de cabeceras, scripts de empaquetado y comprobaciones de compilación.
-
----
-
-## 6. Qué no está probado todavía
-
-- Pantalla, táctil (SE17, FTS, aún sin protocolo implementado).
-- USB y RPMh (solo para sweet).
-- Batería y carga.
-- Sonda de memoria DRAM (necesita el teléfono en fastboot).
-
-Estas partes están marcadas como pendientes en el README del repo.
+### 5.3 What to expect
+- A cepheus kernel on `-M virt` will fail or hang on the first hardware access. That does **not** indicate a build failure.
+- What QEMU is useful for is debugging the platform-independent part: header parsing, packaging scripts and build checks.
 
 ---
 
-## 7. Checklist rápida
+## 6. What is not tested yet
 
-- [ ] Repo en `cepheus-port`, hashes iguales en Forgejo y GitHub.
-- [ ] Workflow `xnu` compilado con `CEPHEUS` y `DEVELOPMENT`.
-- [ ] Artefactos descargados.
-- [ ] Copia de seguridad del teléfono.
-- [ ] Bootloader desbloqueado.
-- [ ] Arranque temporal con `fastboot boot`, no flash.
-- [ ] Log del primer arranque guardado para compararlo en la siguiente iteración.
+- Display, touch (SE17, FTS, protocol not implemented yet).
+- USB and RPMh (sweet only).
+- Battery and charging.
+- DRAM memory probe (needs the phone in fastboot).
+
+These parts are marked as pending in the repo README.
+
+---
+
+## 7. Quick checklist
+
+- [ ] Repo on `cepheus-port`, same hashes on Forgejo and GitHub.
+- [ ] `xnu` workflow built with `CEPHEUS` and `DEVELOPMENT`.
+- [ ] Artifacts downloaded.
+- [ ] Phone backup.
+- [ ] Bootloader unlocked.
+- [ ] Temporary boot with `fastboot boot`, no flash.
+- [ ] First boot log saved to compare it in the next iteration.

@@ -1,14 +1,14 @@
-# Resumen de estado
+# Status summary
 
-> Este equipo es una **nabu ampliada**: DRAM física de **12 GiB**, medida en el `/proc/meminfo` de TWRP
-> (`MemTotal = 11766512 kB`, es decir, 12 GiB menos unos 816 MB para modem/hyp/rmtfs).
-> Por eso `dram_size = 0x300000000` y `owned_memory_size = 0x130000000` son **valores medidos para esta máquina**,
-> no los de un modelo estándar de 6/8 GB. Copiar el `0x180000000` (6 GiB) de otros proyectos haría que la memoria física por encima de 6 GiB
-> fuera invisible para Darwin.
+> This device is an **upgraded nabu**: **12 GiB** of physical DRAM, measured in TWRP's `/proc/meminfo`
+> (`MemTotal = 11766512 kB`, that is, 12 GiB minus about 816 MB for modem/hyp/rmtfs).
+> That is why `dram_size = 0x300000000` and `owned_memory_size = 0x130000000` are **values measured for this machine**,
+> not those of a standard 6/8 GB model. Copying the `0x180000000` (6 GiB) from other projects would make physical memory above 6 GiB
+> invisible to Darwin.
 
-## Hito: el kernel llegó a launchd
+## Milestone: the kernel reached launchd
 
-**Evidencia en pantalla (noche del 2026-10-23)**
+**On-screen evidence (night of 2026-10-23)**
 
 ```
 Process 1 exec of /sbin/launchd failed, errno 2
@@ -20,83 +20,83 @@ PC=18446744005117767160
 LR=18446744005111703156
 ```
 
-**El kernel recorrió completa esta cadena:**
+**The kernel went through this whole chain:**
 
 ```
 bsd_autoconf()        ✅
   kminit()            ✅
-    IOsurfaceRoot::installMemoryRegions()   ✅   ← antes se creía que se atascaba aquí, pero no
-bsd_init, segunda mitad       ✅
+    IOsurfaceRoot::installMemoryRegions()   ✅   ← it used to be believed it got stuck here, but no
+bsd_init, second half         ✅
   vfs_mountroot()     ✅
-  load_init_program() ✅   ← resuelve /sbin/launchd
+  load_init_program() ✅   ← resolves /sbin/launchd
     execve("/sbin/launchd")   ❌  errno 2 (ENOENT)
 ```
 
-**`errno 2` significa que el archivo no existe: no es un problema del kernel, sino que el sistema de archivos raíz no tiene ese archivo.**
+**`errno 2` means the file does not exist: it is not a kernel problem; the root file system simply does not have that file.**
 
-### Esto desmonta el diagnóstico de tres días
+### This overturns three days of diagnosis
 
-La línea de `IOsurfaceRoot::installMemoryRegions()` **nunca fue el final**, solo era el último kprintf.
-Lo que viene justo después (`dtrace_postinit()`, `inittodr()` y la inicialización de red de compilación condicional) no imprime logs, así que
-"el log se paró" se tomó por "el kernel se paró".
+The `IOsurfaceRoot::installMemoryRegions()` line **was never the end**, it was only the last kprintf.
+What comes right after it (`dtrace_postinit()`, `inittodr()` and the conditionally compiled network initialization) prints no logs, so
+"the log stopped" was taken for "the kernel stopped".
 
-Lo que siempre faltó es **una raíz de verdad**, no un surface propio.
+What was always missing is **a real root**, not an own surface.
 
-## Compilación local en Linux funcionando (12 veces más rápida)
+## Local Linux build working (12 times faster)
 
-| Elemento | Runner macOS de GitHub | WSL Ubuntu local |
+| Item | GitHub macOS runner | Local WSL Ubuntu |
 |---|---|---|
-| Compilación por ronda | 15-17 minutos | **72 segundos** |
-| Producto | 49,2 MB | **49 MB** |
-| Reproducible | Solo con CI | Se puede ejecutar en la máquina cuando quieras |
+| Build per round | 15-17 minutes | **72 seconds** |
+| Output | 49.2 MB | **49 MB** |
+| Reproducible | Only with CI | Can be run on the machine whenever you want |
 
-Verificación:
+Verification:
 
 ```
 file            Mach-O 64-bit arm64 executable, flags:<NOUNDEFS|PIE>
-__TEXT vmaddr   0xfffffff007004000      ← igual que el kernelcache original
+__TEXT vmaddr   0xfffffff007004000      ← same as the original kernelcache
 symbols         22708
-Sondas nabu     nabu_mark / nabu_mark_map / nabu_mark_num / nabu_mark_putc
-Sondeo de UFS   nabu_ufs_register_probe.cpp
+nabu probes     nabu_mark / nabu_mark_map / nabu_mark_num / nabu_mark_putc
+UFS probing     nabu_ufs_register_probe.cpp
 sha256          c756ecdb88a9dd50156dc27d2cdf48a08ddf93fcf204040fa57804f814fc3c15
 ```
 
-**Cadena de herramientas**: `Allenwdk/xnu-linux-toolchain` (Ubuntu 24.04 / clang 18 / 12 núcleos)
+**Toolchain**: `Allenwdk/xnu-linux-toolchain` (Ubuntu 24.04 / clang 18 / 12 cores)
 
-## 18 problemas resueltos por el camino
+## 18 problems solved along the way
 
 ```
- 1  libdispatch no tiene paquete en Ubuntu → compilar desde fuente + .pc escrito a mano
- 2  toolchain/csh es un enlace simbólico   → cp -L
- 3  xcrun con /usr/bin/xcrun fijo          → enlace simbólico
- 4  sysctl con /usr/sbin/sysctl fijo       → sustituido por un shim de Darwin
- 5  /bin/sh es dash                        → apuntar a bash
- 6  bison/flex/m4 están en /usr/sbin       → enlace simbólico
- 7  hostcompat.h no existe                 → escrito a mano
- 8  libc.h no existe                       → escrito a mano (OSAtomic / alineación de página)
- 9  copyfile.h / fcopyfile                 → escrito a mano
-10  setmode/getmode                        → escrito a mano (desplazamiento de who + corrección de mask)
-11  TargetConditionals.h                   → escrito a mano, y solo en dos sitios
-12  sys/_types/_os_inline.h                → escrito a mano y replicado en el árbol compat
-13  mach/mach_init.h                       → escrito a mano
-14  -Wno-* no reconocidos                  → -Wno-unknown-warning-option
-15  nombres de diagnóstico de macOS clang 26 → CCC_OVERRIDE_OPTIONS, rebajando uno a uno
-16  sed -i '' es sintaxis BSD              → tratamiento por ramas, y solo se ejecuta en Darwin
-17  awk \( en GNU conserva la barra invertida → hecho parche (zzzz-nabu-awk-parens)
-18  doble enlazado de mockfs (23 símbolos duplicados) → se quita force_load
+ 1  libdispatch has no Ubuntu package    → build from source + hand-written .pc
+ 2  toolchain/csh is a symbolic link     → cp -L
+ 3  xcrun with hard-coded /usr/bin/xcrun → symbolic link
+ 4  sysctl with hard-coded /usr/sbin/sysctl → replaced by a Darwin shim
+ 5  /bin/sh is dash                      → point it to bash
+ 6  bison/flex/m4 are in /usr/sbin       → symbolic link
+ 7  hostcompat.h does not exist          → hand-written
+ 8  libc.h does not exist                → hand-written (OSAtomic / page alignment)
+ 9  copyfile.h / fcopyfile               → hand-written
+10  setmode/getmode                      → hand-written (who shift + mask fix)
+11  TargetConditionals.h                 → hand-written, and only in two places
+12  sys/_types/_os_inline.h              → hand-written and replicated in the compat tree
+13  mach/mach_init.h                     → hand-written
+14  unrecognized -Wno-*                  → -Wno-unknown-warning-option
+15  macOS clang 26 diagnostic names      → CCC_OVERRIDE_OPTIONS, downgrading them one by one
+16  sed -i '' is BSD syntax              → handled per branch, and only run on Darwin
+17  awk \( in GNU keeps the backslash    → turned into a patch (zzzz-nabu-awk-parens)
+18  mockfs linked twice (23 duplicate symbols) → force_load removed
 ```
 
-## Siguiente paso
+## Next step
 
-**Lo único que falta es un sistema de archivos raíz de verdad.**
+**The only thing missing is a real root file system.**
 
 ```
 ./unixnu ipsw fetch                          # OS + Cryptex1,SystemOS
-./unixnu build userdata                      # manifiesto SHNGROOT + dos ventanas
+./unixnu build userdata                      # SHNGROOT manifest + two windows
 fastboot flash userdata out/nabu/userdata/userdata-root.img
 ```
 
-Sabido: los LBA de `[userdata]` ya se midieron hace tiempo (`first_lba = 0x288C40` / `last_lba = 0x77BF3FA` /
+Known: the `[userdata]` LBAs were measured a while ago (`first_lba = 0x288C40` / `last_lba = 0x77BF3FA` /
 `lba_bytes = 4096`).
 
-**Ya no es un problema de compilación ni de drivers: es un problema de datos.**
+**It is no longer a build or driver problem: it is a data problem.**

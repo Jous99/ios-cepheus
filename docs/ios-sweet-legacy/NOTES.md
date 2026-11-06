@@ -432,32 +432,32 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   5. panic hook at top of panic_trap_to_debugger: va_copy + _doprnt(fmt, &copy, sweet_early_putc, 16).
   Verify with tools/xnu-cc.py (compile+symbols) and patch-order simulation before the single CI run.
 
-## Estado (2026-10-20): cuelgue tras pthread y pruebas de RAM descartadas
+## Status (2026-10-20): hang after pthread and RAM tests ruled out
 
-Pantalla del Mi 9 (cepheus): el kernel llega a "SWEET pthread: libpthread-514.100.2 registered"
-y ahí se queda. La marca "lockdown done" (parche 0089 + sweet_early_mark) no se ve, y el kernel
-sí contiene las cadenas (strings: 5 coincidencias). No sabemos si el kernel está colgado o si la
-consola deja de dibujar tras PE_lockdown_iokit.
+Mi 9 (cepheus) screen: the kernel reaches "SWEET pthread: libpthread-514.100.2 registered"
+and stays there. The "lockdown done" mark (patch 0089 + sweet_early_mark) is not shown, and the kernel
+does contain the strings (strings: 5 matches). We do not know whether the kernel is hung or whether the
+console stops drawing after PE_lockdown_iokit.
 
-Orden de fases observado en pantalla: EARLY_BOOT (pthread) corre después de PE_lockdown_iokit.
-- pthread (sweet_pthread_register, parche 0019) es STARTUP_RANK_SECOND.
-- Funciones EARLY_BOOT de rango MIDDLE (candidatas al cuelgue, no imprimen nada):
+Phase order observed on screen: EARLY_BOOT (pthread) runs after PE_lockdown_iokit.
+- pthread (sweet_pthread_register, patch 0019) is STARTUP_RANK_SECOND.
+- EARLY_BOOT functions of rank MIDDLE (hang candidates, they print nothing):
   pgz_init (zalloc.c), kmem_crypto_init (vm_kern.c), vm_pageout_create_gc_thread (vm_pageout.c),
   vm_deferred_reclamation_init (vm_reclaim.c), personas_bootstrap (kern_persona.c),
   iotrace_init (iotrace.c), set_awl_scratch_exists_flag... (debug.c), socd_client (rank 0).
-- Siguiente paso de depuración: marca antes y después de cada una de estas funciones.
+- Next debugging step: a mark before and after each of these functions.
 
-Pruebas de RAM (descartadas como canal de logs):
-- Marca en 0x9d000000 (carve-out framebuffer +16 MB) y en 0x1f0000000 (DRAM alto).
-- Reinicio por PSCI SYSTEM_RESET desde el shim: la marca NO sobrevive (count vuelve a 1).
-- Con el shim en la partición boot: tras el reinicio por PSCI el teléfono cae a fastboot;
-  no llegamos a la segunda ejecución desde boot. Causa no confirmada.
-- wdt=-1 quitado: no hubo reinicio en 10 minutos.
-- IMEM restart_reason: reset() escribe RESTART_BOOTLOADER (0x77665500). Probado RESTART_NORMAL
-  (0x77665501) sin efecto observable.
+RAM tests (ruled out as a log channel):
+- Mark at 0x9d000000 (framebuffer carve-out +16 MB) and at 0x1f0000000 (high DRAM).
+- Reset through PSCI SYSTEM_RESET from the shim: the mark does NOT survive (count goes back to 1).
+- With the shim in the boot partition: after the PSCI reset the phone drops to fastboot;
+  we never get the second run from boot. Cause not confirmed.
+- wdt=-1 removed: there was no reboot in 10 minutes.
+- IMEM restart_reason: reset() writes RESTART_BOOTLOADER (0x77665500). Tried RESTART_NORMAL
+  (0x77665501) with no observable effect.
 
-Estado del dispositivo: boot restaurado desde backup/boot.img (stock, verificado ANDROID!).
-userdata contiene el root de iOS 16 (ios16-root.simg). El shim de prueba de RAM se quitó
-(shim/shim.c restaurado; la versión con la prueba está en shim/shim.c.bak_ramtest2).
+Device state: boot restored from backup/boot.img (stock, verified ANDROID!).
+userdata holds the iOS 16 root (ios16-root.simg). The RAM test shim was removed
+(shim/shim.c restored; the version with the test is in shim/shim.c.bak_ramtest2).
 
-Sin UART: no tenemos adaptador, así que la depuración sigue dependiendo de la pantalla.
+No UART: we have no adapter, so debugging still depends on the screen.

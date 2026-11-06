@@ -1,45 +1,46 @@
-# Comparación con trabajos previos: 0xDive/ios-nabu
 
-> Documento de la Xiaomi Pad 5 (nabu), traducido al español. El original en chino está en `docs/original-zh/`.
+# Comparison with prior work: 0xDive/ios-nabu
 
-Investigado el 2026-10-21. Repositorio <https://github.com/0xDive/ios-nabu>
-(creado el 2026-10-19, Python, 12 PR/issues abiertos, el último #34).
+> Document from the Xiaomi Pad 5 (nabu), translated to English. The Chinese original is in `docs/original-zh/`.
 
-## Siguen un camino totalmente distinto
+Researched on 2026-10-21. Repository <https://github.com/0xDive/ios-nabu>
+(created on 2026-10-19, Python, 12 open PRs/issues, the latest #34).
 
-| Aspecto | 0xDive/ios-nabu | Este proyecto (unixnu-nabu) |
+## They follow a completely different path
+
+| Aspect | 0xDive/ios-nabu | This project (unixnu-nabu) |
 |---|---|---|
-| Capa de arranque | **U-Boot v2026.07** (U-Boot de teléfono Qualcomm, pin `ece349ad...`) | **Mu-Silicium EDK2** + UniXNU |
-| Objetivo actual | Resolver primero el **canal de logs** (consola USB gadget ACM / `fastboot oem console`) | Arrancar XNU directamente |
-| Avance medido | Atascados en el bring-up del firmware / pila USB, **sin ningún resultado de arranque de XNU** | **El kernel XNU ya entra en ejecución** (`DARWINBOOT: hand-off to the kernel`) |
+| Boot layer | **U-Boot v2026.07** (Qualcomm phone U-Boot, pin `ece349ad...`) | **Mu-Silicium EDK2** + UniXNU |
+| Current goal | Solve the **log channel** first (USB gadget ACM console / `fastboot oem console`) | Boot XNU directly |
+| Measured progress | Stuck on the firmware / USB stack bring-up, **no XNU boot result at all** | **The XNU kernel already starts running** (`DARWINBOOT: hand-off to the kernel`) |
 
-## Sus puntos de bloqueo concretos (PR #30-#34)
+## Their specific blockers (PR #30-#34)
 
-El objetivo es que la pila USB de Qualcomm funcione dentro de EDK2 para usar USB como puerto serie:
+The goal is to get the Qualcomm USB stack working inside EDK2 so USB can be used as a serial port:
 
-- Con el PE32 de `PciHostBridge`, `LoadImage` tiene éxito, pero
-  `EFI_PCI_ROOT_BRIDGE_IO` / `EFI_PCI_IO` / `EFI_USB2_HC` / `EFI_USB_IO` **faltan todos**.
-- Según el antiguo `XhciPciEmulation.c` de código abierto, creen que hay que enlazar `QCOM_USB_CONFIG_PROTOCOL`
-  (GUID `E722B03F-B250-42CE-8EBD-5BD51812D037`, comprobado que existe en su binario SM8150 fijado),
-  y `EFI_USB_INIT` con GUID `2DA15AC7-4909-4C4C-B8C3-A742195EA46E`.
-- Cambiar el orden de DXE (`pci-first` / `usb-stack-first`) provoca una **excepción síncrona antes de la EFI Shell**:
+- With the `PciHostBridge` PE32, `LoadImage` succeeds, but
+  `EFI_PCI_ROOT_BRIDGE_IO` / `EFI_PCI_IO` / `EFI_USB2_HC` / `EFI_USB_IO` **are all missing**.
+- Based on the old open-source `XhciPciEmulation.c`, they believe `QCOM_USB_CONFIG_PROTOCOL` must be bound
+  (GUID `E722B03F-B250-42CE-8EBD-5BD51812D037`, confirmed to exist in their pinned SM8150 binary),
+  and `EFI_USB_INIT` with GUID `2DA15AC7-4909-4C4C-B8C3-A742195EA46E`.
+- Changing the DXE order (`pci-first` / `usb-stack-first`) causes a **synchronous exception before the EFI Shell**:
   `ELR 0x13FE0C440`, `ESR 0x02000000` (EC=0), `FAR=0`
-  -> simbolizado sin conexión en `ArmCpuDxe::UpdateRegionMappingRecursive()`,
-  con `DxeCore::SetUefiImageMemoryAttributes()` / `ProtectUefiImage()` en la pila.
-- Probaron `PcdImageProtectionPolicy = 0` para desactivar la protección de imágenes y localizar el fallo; sigue sin funcionar.
-- Las etapas 8-11 son sobre todo "auditorías solo en host" (compilar U-Boot, DTS de nabu, Type-C/PHY del PM8150B);
-  todos los productos están marcados `safe_to_boot = false`, y **nunca han publicado una imagen arrancable**.
+  -> symbolized offline to `ArmCpuDxe::UpdateRegionMappingRecursive()`,
+  with `DxeCore::SetUefiImageMemoryAttributes()` / `ProtectUefiImage()` on the stack.
+- They tried `PcdImageProtectionPolicy = 0` to disable image protection and locate the failure; it still does not work.
+- Stages 8-11 are mostly "host-only audits" (building U-Boot, nabu DTS, PM8150B Type-C/PHY);
+  all artifacts are marked `safe_to_boot = false`, and **they have never published a bootable image**.
 
-## Tres datos útiles para nosotros
+## Three useful facts for us
 
-### 1. La trampa de la protección de imágenes de EDK2 (anótala)
+### 1. The EDK2 image protection trap (write it down)
 
-La combinación `ArmCpuDxe::UpdateRegionMappingRecursive` + `PcdImageProtectionPolicy`
-**no nos ha afectado** al tocar fdf / APRIORI / tamaño del FD, pero si se cambia la disposición o los permisos
-de la imagen, podría provocar el mismo tipo de fallo temprano de la MMU. Para investigarlo:
-`PcdImageProtectionPolicy = 0` como comparación de una sola variable.
+The `ArmCpuDxe::UpdateRegionMappingRecursive` + `PcdImageProtectionPolicy` combination
+**has not affected us** when touching the fdf / APRIORI / FD size, but if the image layout or permissions
+change, it could cause the same kind of early MMU failure. To investigate it:
+`PcdImageProtectionPolicy = 0` as a single-variable comparison.
 
-### 2. El DTS público de nabu (material ya hecho para la fase PMGR)
+### 2. The public nabu DTS (ready-made material for the PMGR phase)
 
 ```
 repo:   https://github.com/SeimoDev/linux-xiaomi-nabu
@@ -48,26 +49,26 @@ file:   arch/arm64/boot/dts/qcom/sm8150-xiaomi-nabu.dts
 compat: "xiaomi,nabu", "qcom,sm8150"
 ```
 
-Los nodos de PMGR / UFS / relojes / reguladores se **copian directamente de esta fuente**; es mucho más rápido que
-hacer ingeniería inversa de ApplePMGR.
-Ojo: hace falta el `sm8150-wcd9340.dtsi` que lo acompaña; no está en el árbol que trae U-Boot.
+The PMGR / UFS / clock / regulator nodes are **copied directly from this source**; it is much faster than
+reverse-engineering ApplePMGR.
+Note: it needs the accompanying `sm8150-wcd9340.dtsi`; it is not in the tree that ships with U-Boot.
 
-### 3. Parámetros de hardware de USB / PHY (para escribir después los drivers de USB y carga)
+### 3. USB / PHY hardware parameters (for writing the USB and charging drivers later)
 
-| Elemento | Valor |
+| Item | Value |
 |---|---|
-| Wrapper USB1 | `0x0A6F8800` (OTG, High-Speed) |
-| PHY HS de USB1 | `0x088E2000` |
-| Controlador USB2 | `0x0A800000` (host, **SuperSpeed Plus**) |
-| Alimentación del PHY | 0.880 V (PLL) / 1.800 V (digital) / 3.072 V (analógico) |
+| USB1 wrapper | `0x0A6F8800` (OTG, High-Speed) |
+| USB1 HS PHY | `0x088E2000` |
+| USB2 controller | `0x0A800000` (host, **SuperSpeed Plus**) |
+| PHY supply | 0.880 V (PLL) / 1.800 V (digital) / 3.072 V (analog) |
 | Type-C | `qcom,pm8150b-typec` + `qcom,pm8150b-vbus-reg` |
-| Medido en Android | `/sys/class/udc/a600000.dwc3`: `state=configured`, `maximum_speed=high-speed`, `is_otg=1` |
+| Measured on Android | `/sys/class/udc/a600000.dwc3`: `state=configured`, `maximum_speed=high-speed`, `is_otg=1` |
 
-## Conclusión
+## Conclusion
 
-**No seguimos su ruta.** Para conseguir logs se desviaron a U-Boot y se atascaron en la capa de firmware;
-este proyecto ya tiene medios de log utilizables (`Print` en pantalla y, si hace falta, UART a 115200)
-y ya ha pasado de un punto al que ellos no llegaron (ejecución del kernel).
+**We are not following their route.** To get logs they detoured to U-Boot and got stuck at the firmware layer;
+this project already has usable log means (on-screen `Print` and, if needed, UART at 115200)
+and has already passed a point they never reached (kernel execution).
 
-Solo se aprovechan los tres datos **informativos** de arriba, sobre todo el DTS público de nabu, que sirve
-directamente para PMGR.
+Only the three **informative** facts above are reused, above all the public nabu DTS, which serves
+PMGR directly.
